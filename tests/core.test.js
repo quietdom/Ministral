@@ -55,7 +55,7 @@ import { switchAccount } from "../valorant/accountSwitcher.js";
 import { formatNightMarket } from "../valorant/shop.js";
 import { getPrice } from "../valorant/cache.js";
 import { getStatsFor, getOverallStats, addStore } from "../misc/stats.js";
-import { basicEmbed, secondaryEmbed, actionRow, removeAlertButton, collectionModeButtons, weaponSelectDropdown, statsForSkinEmbed, getSkinLevels, getRankColor, getTierName, formatSeason, getPlayerTitle, resolvePeakRankString, renderProgressBar, renderCompetitiveMatchHistory, renderProfile, renderCollection, profileButtons, competitiveHistoryButtons, replyOrFollowUp, deferInteraction } from "../discord/embed.js";
+import { basicEmbed, secondaryEmbed, actionRow, removeAlertButton, collectionModeButtons, weaponSelectDropdown, statsForSkinEmbed, getSkinLevels, getRankColor, getTierName, formatSeason, getPlayerTitle, resolvePeakRankString, renderProgressBar, renderCompetitiveMatchHistory, renderProfile, renderCollection, skinCollectionSingleEmbed, profileButtons, competitiveHistoryButtons, replyOrFollowUp, deferInteraction } from "../discord/embed.js";
 import { renderLiveGame } from "../discord/livegameEmbed.js";
 import { cachedByPuuid, resolveServerName, parseMMRData, repollLiveGame, enrichPlayers } from "../valorant/livegame.js";
 import { formatServerName, formatPreferredServers, fitDescription, formatPlayerRow } from "../discord/livegameEmbed.js";
@@ -1251,4 +1251,56 @@ test("stats: old day buckets are pruned and rank reflects counts, not insertion 
     cfg.statsExpirationDays = restore.days;
     if (backup) fs.writeFileSync(statsFile, backup);
     else fs.unlinkSync(statsFile);
+});
+
+test("collection embed: displays Account # instead of <@id> when someone else views collection", async () => {
+    initUserDatabase("data/test_users.db");
+    saveUserToDb({
+        id: "target-user-123",
+        accounts: [
+            { id: "target-user-123", puuid: "puuid-target-1", username: "TargetPlayer#123", auth: { rso: "t1" }, alerts: [] },
+            { id: "target-user-123", puuid: "puuid-target-2", username: "TargetPlayer#456", auth: { rso: "t2" }, alerts: [] }
+        ],
+        currentAccount: 2,
+        settings: { hideIgn: false }
+    });
+
+    const mockInteractionOther = {
+        user: { id: "viewer-user-456" },
+        locale: "fr",
+        channel: null
+    };
+
+    const targetUser = new User({ id: "target-user-123", puuid: "puuid-target-2", username: "TargetPlayer#456" });
+    const singleResultOther = await skinCollectionSingleEmbed(mockInteractionOther, "target-user-123", targetUser, { loadout: { Guns: [] }, favorites: {} });
+    assert.ok(singleResultOther.embeds[0]);
+    assert.ok(!singleResultOther.embeds[0].title.includes("<@"));
+    assert.ok(singleResultOther.embeds[0].title.includes("Account #2"));
+
+    // With French locale in settings
+    saveUserToDb({
+        id: "fr-viewer",
+        accounts: [{ id: "fr-viewer", puuid: "puuid-fr", username: "FRViewer#1", auth: { rso: "t" }, alerts: [] }],
+        currentAccount: 1,
+        settings: { locale: "fr" }
+    });
+    const mockInteractionFr = {
+        id: "fr-viewer",
+        user: { id: "fr-viewer" },
+        channel: null
+    };
+    const frResult = await skinCollectionSingleEmbed(mockInteractionFr, "target-user-123", targetUser, { loadout: { Guns: [] }, favorites: {} });
+    assert.ok(frResult.embeds[0]);
+    assert.ok(!frResult.embeds[0].title.includes("<@"));
+    assert.ok(frResult.embeds[0].title.includes("Compte #2"));
+
+    const mockInteractionSelf = {
+        user: { id: "target-user-123" },
+        locale: "en-US",
+        channel: null
+    };
+    const singleResultSelf = await skinCollectionSingleEmbed(mockInteractionSelf, "target-user-123", targetUser, { loadout: { Guns: [] }, favorites: {} });
+    assert.ok(singleResultSelf.embeds[0]);
+    assert.ok(!singleResultSelf.embeds[0].title.includes("<@"));
+    assert.ok(singleResultSelf.embeds[0].title.includes("TargetPlayer#456"));
 });

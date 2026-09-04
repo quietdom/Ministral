@@ -90,7 +90,7 @@ import {
 } from "../misc/util.js";
 import config, { loadConfig, saveConfig } from "../misc/config.js";
 import { localError, localLog, sendConsoleOutput, setLoggerClient } from "../misc/logger.js";
-import { DEFAULT_VALORANT_LANG, discToValLang, l, s } from "../misc/languages.js";
+import { DEFAULT_VALORANT_LANG, discToValLang, l, s, hideUsername } from "../misc/languages.js";
 import {
     deleteUser,
     deleteWholeUser, findTargetAccountIndex,
@@ -1155,7 +1155,7 @@ client.on("interactionCreate", async (interaction) => {
 
                     await interaction.followUp({
                         embeds: [{ // move this to embed.js?
-                            title: s(interaction).info.WALLET_HEADER.f({ u: valorantUser.username }, interaction),
+                            title: s(interaction).info.WALLET_HEADER.f({ u: hideUsername({ u: valorantUser.username }, interaction).u }, interaction),
                             color: VAL_COLOR_1,
                             fields: [
                                 { name: s(interaction).info.VPOINTS, value: `${theVPEmoji} ${balance.vp}`, inline: true },

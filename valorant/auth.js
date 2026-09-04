@@ -39,12 +39,8 @@ export const getUser = (id, account = null) => {
         return userData && new User(userData);
     }
 
-    try {
-        const userData = getUserJson(id, account);
-        return userData && new User(userData);
-    } catch (e) {
-        return null;
-    }
+    const userData = getUserJson(id, account);
+    return userData ? new User(userData) : null;
 };
 
 export const getPuuid = (id, account = null) => {

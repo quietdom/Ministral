@@ -993,6 +993,15 @@ const getRunninOnEmptySprayIcon = async () => {
     }
 };
 
+const getCollectionUsernameText = (interaction, id, user, someoneElseUsedCommand) => {
+    if (someoneElseUsedCommand) {
+        const json = readUserJson(id);
+        const currentAccount = json?.currentAccount || 1;
+        return s(interaction).info.SWITCH_ACCOUNT_BUTTON.f({ n: currentAccount });
+    }
+    return hideUsername({ u: user?.username || "" }, id).u;
+};
+
 export const skinCollectionSingleEmbed = async (interaction, id, user, { loadout, favorites }) => {
     const someoneElseUsedCommand = interaction.message ?
         interaction.message.interaction && interaction.message.interaction.user.id !== user.id :
@@ -1077,14 +1086,7 @@ export const skinCollectionSingleEmbed = async (interaction, id, user, { loadout
     const emoji = await VPEmoji(interaction);
     const summaryLine = `💰 **${s(interaction).info.COLLECTION_EQUIPPED_VALUE || "Equipped Value"}:** ${emoji} **${totalValue.toLocaleString()}**`;
 
-    let usernameText;
-    if (someoneElseUsedCommand) {
-        usernameText = `<@${id}>`;
-        const json = readUserJson(id);
-        if (json.accounts.length > 1) usernameText += ' ' + s(interaction).info.SWITCH_ACCOUNT_BUTTON.f({ n: json.currentAccount });
-    } else {
-        usernameText = user.username;
-    }
+    const usernameText = getCollectionUsernameText(interaction, id, user, someoneElseUsedCommand);
 
     const emptySprayIcon = categoryFields.length === 0 ? await getRunninOnEmptySprayIcon() : null;
     const embed = {
@@ -1218,14 +1220,7 @@ export const collectionStatsEmbed = async (interaction, id, user) => {
         `🟢 **Battlepass / Standard:** ${tierCounts.other} (${Math.round(tierCounts.other / totalCount * 100)}%)`
     ];
 
-    let usernameText;
-    if (someoneElseUsedCommand) {
-        usernameText = `<@${id}>`;
-        const json = readUserJson(id);
-        if (json.accounts.length > 1) usernameText += ' ' + s(interaction).info.SWITCH_ACCOUNT_BUTTON.f({ n: json.currentAccount });
-    } else {
-        usernameText = user.username;
-    }
+    const usernameText = getCollectionUsernameText(interaction, id, user, someoneElseUsedCommand);
 
     const descriptionText = totalCollectionValue === 0
         ? `💰 **${s(interaction).info.COLLECTION_TOTAL_VALUE || "Total Collection Value"}:** ${emoji} **0**\n🎒 **${s(interaction).info.COLLECTION_TOTAL_SKINS || "Total Skins Owned"}:** **${validSkins.length}** skins *(Standard/Battlepass only)*`
@@ -1311,14 +1306,7 @@ export const skinCollectionPageEmbed = async (interaction, id, user, { loadout, 
     if (pageIndex < 0) pageIndex = pages.length - 1;
     if (pageIndex >= pages.length) pageIndex = 0;
 
-    let usernameText;
-    if (someoneElseUsedCommand) {
-        usernameText = `<@${id}>`;
-        const json = readUserJson(id);
-        if (json.accounts.length > 1) usernameText += ' ' + s(interaction).info.SWITCH_ACCOUNT_BUTTON.f({ n: json.currentAccount });
-    } else {
-        usernameText = user.username;
-    }
+    const usernameText = getCollectionUsernameText(interaction, id, user, someoneElseUsedCommand);
 
     const embeds = [basicEmbed(s(interaction).info.COLLECTION_HEADER.f({ u: usernameText }, id))];
     const pageEmbedPromises = pages[pageIndex].map(weapon => createEmbed(weapon));
@@ -1353,14 +1341,7 @@ export const collectionOfWeaponEmbed = async (interaction, id, user, weaponTypeU
 
     const emoji = await VPEmoji(interaction);
 
-    let usernameText;
-    if (someoneElseUsedCommand) {
-        usernameText = `<@${id}>`;
-        const json = readUserJson(id);
-        if (json.accounts.length > 1) usernameText += ' ' + s(interaction).info.SWITCH_ACCOUNT_BUTTON.f({ n: json.currentAccount });
-    } else {
-        usernameText = user.username;
-    }
+    const usernameText = getCollectionUsernameText(interaction, id, user, someoneElseUsedCommand);
 
     const skinsData = await Promise.all(skins.map(skinUuid => getSkin(skinUuid, false)));
     const seenSkinUuids = new Set();
