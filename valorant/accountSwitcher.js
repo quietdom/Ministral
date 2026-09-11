@@ -21,13 +21,17 @@ export const getUserJson = (id, account = null) => {
     return user.accounts[account - 1] || null;
 };
 
+// Callers of this helper only touch metadata (e.g. migrating alert channel
+// ids), never auth — always preserve whatever's currently in the DB.
 export const saveUserJson = (id, json) => {
     if (!json.id) json.id = id;
-    saveUserToDb(json);
+    saveUserToDb(json, true);
 };
 
 export const saveUser = (user, account = null) => {
-    if (user.puuid && updateSingleAccountInDb(user)) {
+    // A command may have read this user before auth refreshed on another shard
+    // (or while rendering the shop). Metadata saves must never write tokens.
+    if (user.puuid && updateSingleAccountInDb(user, true)) {
         return;
     }
 
@@ -45,9 +49,9 @@ export const saveUser = (user, account = null) => {
 
         const foundIndex = userJson.accounts.findIndex(a => a.puuid === user.puuid);
         if (foundIndex !== -1) {
-            userJson.accounts[foundIndex] = user;
+            userJson.accounts[foundIndex] = { ...user, auth: userJson.accounts[foundIndex].auth };
         } else if (account && account <= userJson.accounts.length) {
-            userJson.accounts[account - 1] = user;
+            userJson.accounts[account - 1] = { ...user, auth: userJson.accounts[account - 1].auth };
         } else {
             userJson.accounts.push(user);
         }
@@ -112,7 +116,7 @@ export const deleteUser = (id, accountNumber) => {
                 userJson.currentAccount = userJson.accounts.length;
             }
             deleteAccountFromDb(userToDelete.puuid);
-            saveUserToDb(userJson);
+            saveUserToDb(userJson, true);
             clearSettingsCache(id);
         }
 
@@ -143,7 +147,7 @@ export const switchAccount = (id, accountNumber) => {
     if (!Number.isInteger(accountNumber) || accountNumber < 1 || accountNumber > userJson.accounts.length) return null;
 
     userJson.currentAccount = accountNumber;
-    saveUserToDb(userJson);
+    saveUserToDb(userJson, true);
 
     return userJson.accounts[accountNumber - 1];
 };

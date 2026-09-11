@@ -127,7 +127,8 @@ const prepareStatements = () => {
         getAccountByPuuid: db.prepare(`SELECT * FROM accounts WHERE puuid = ?`),
         getAllUserIds: db.prepare(`SELECT id FROM users`),
         deleteAccount: db.prepare(`DELETE FROM accounts WHERE puuid = ?`),
-        updateSingleAccount: db.prepare(`UPDATE accounts SET username = ?, region = ?, auth = ?, alerts = ?, authFailures = ?, lastFetchedData = ?, lastNoticeSeen = ?, lastSawEasterEgg = ?, updatedAt = ? WHERE puuid = ?`),
+        updateSingleAccount: db.prepare(`UPDATE accounts SET username = ?, region = ?, auth = CASE WHEN ? THEN auth ELSE ? END, alerts = ?, authFailures = ?, lastFetchedData = ?, lastNoticeSeen = ?, lastSawEasterEgg = ?, updatedAt = ? WHERE puuid = ?`),
+        updateAccountAuth: db.prepare(`UPDATE accounts SET auth = ?, authFailures = CASE WHEN ? THEN 0 ELSE authFailures END, updatedAt = ? WHERE puuid = ? AND userId = ? AND json_extract(auth, '$.rso') IS ? AND json_extract(auth, '$.idt') IS ? AND json_extract(auth, '$.refresh_token') IS ?`),
         getUserIdsWithAlertsOrDailyShop: db.prepare(`SELECT DISTINCT u.id FROM users u LEFT JOIN accounts a ON a.userId = u.id WHERE (a.alerts IS NOT NULL AND a.alerts != '[]') OR (json_extract(u.settings, '$.dailyShop') NOT IN (0, 'false', false) AND json_extract(u.settings, '$.dailyShop') IS NOT NULL)`),
         // Atomic claim: inserts a fresh lock, or steals an existing one only
         // if it's older than its TTL (owner presumably crashed/hung). One
@@ -172,7 +173,7 @@ export const getUserFromDb = (id) => {
     };
 };
 
-const saveUserToDbTransaction = (user) => {
+const saveUserToDbTransaction = (user, preserveAuth = false) => {
     const now = Date.now();
 
     stmts.upsertUser.run(
@@ -193,12 +194,16 @@ const saveUserToDbTransaction = (user) => {
 
     for (const account of user.accounts || []) {
         if (!account?.puuid) continue;
+        // Callers that only touch settings/alerts/currentAccount read this whole
+        // record earlier and must not write back the auth they read alongside it —
+        // that would clobber a token another shard refreshed in the meantime.
+        const existingAuth = preserveAuth ? stmts.getAccountByPuuid.get(account.puuid)?.auth : null;
         stmts.upsertAccount.run(
             account.puuid,
             user.id,
             account.username || "",
             account.region || null,
-            JSON.stringify(account.auth || {}),
+            existingAuth ?? JSON.stringify(account.auth || {}),
             JSON.stringify(account.alerts || []),
             account.authFailures || 0,
             account.lastFetchedData || null,
@@ -210,12 +215,12 @@ const saveUserToDbTransaction = (user) => {
     }
 };
 
-export const saveUserToDb = (user) => {
+export const saveUserToDb = (user, preserveAuth = false) => {
     if (!user?.id || !db) return;
     if (db.inTransaction) {
-        saveUserToDbTransaction(user);
+        saveUserToDbTransaction(user, preserveAuth);
     } else {
-        saveUserToDbInTransaction(user);
+        saveUserToDbInTransaction(user, preserveAuth);
     }
 };
 
@@ -262,11 +267,12 @@ export const deleteAccountFromDb = (puuid) => {
     stmts.deleteAccount.run(puuid);
 };
 
-export const updateSingleAccountInDb = (account) => {
+export const updateSingleAccountInDb = (account, preserveAuth = false) => {
     if (!account?.puuid || !db || !stmts?.updateSingleAccount) return false;
     const result = stmts.updateSingleAccount.run(
         account.username || "",
         account.region || null,
+        preserveAuth ? 1 : 0,
         JSON.stringify(account.auth || {}),
         JSON.stringify(account.alerts || []),
         account.authFailures || 0,
@@ -279,9 +285,22 @@ export const updateSingleAccountInDb = (account) => {
     return result.changes > 0;
 };
 
+// Compare-and-swap keeps late HTTP responses from overwriting a newer login,
+// and updates only auth so refreshing cannot undo alerts or account settings.
+// Compare OAuth credentials, not entitlements: an entitlement repair while
+// /token is in flight must not prevent saving its rotated refresh token.
+export const updateAccountAuthInDb = (user, expectedAuth, auth, resetFailures = false) => {
+    if (!user?.puuid || !db || !stmts?.updateAccountAuth) return false;
+    return stmts.updateAccountAuth.run(
+        JSON.stringify(auth), resetFailures ? 1 : 0, Date.now(),
+        user.puuid, user.id, expectedAuth?.rso ?? null,
+        expectedAuth?.idt ?? null, expectedAuth?.refresh_token ?? null
+    ).changes > 0;
+};
+
 /** Try to claim `key` for `ownerId`. Returns false if another owner holds a live claim. */
 export const acquireRefreshLock = (key, ownerId, ttlMs) => {
-    if (!key || !db || !stmts?.acquireRefreshLock) return true;
+    if (!key || !db || !stmts?.acquireRefreshLock) return false;
     const result = stmts.acquireRefreshLock.run(key, ownerId, Date.now(), ttlMs);
     return result.changes > 0;
 };

@@ -71,6 +71,12 @@ export const fetch = (url, options = {}) => {
     }
 
     return new Promise((resolve, reject) => {
+        let timeout;
+        const finish = (error, response) => {
+            clearTimeout(timeout);
+            if (error) reject(error);
+            else resolve(response);
+        };
         const req = https.request(url, {
             agent: getKeepAliveAgent(hostname),
             method: options.method || "GET",
@@ -100,19 +106,30 @@ export const fetch = (url, options = {}) => {
                 if (res.statusCode === 403 && res.headers["x-frame-options"] === "SAMEORIGIN") {
                     console.error(`[ !!! ] Error 1020 from ${hostname}: your bot's IP might be blocked by Riot/Cloudflare — try hosting on a different IP to confirm.`);
                 }
-                resolve(res);
+                finish(null, res);
             });
             resp.on('error', err => {
                 console.error("HTTP stream error:", err);
-                reject(err);
+                finish(err);
             });
         });
-        req.write(options.body || "");
-        req.end();
         req.on('error', err => {
             console.error("HTTP request error:", err);
-            reject(err);
+            finish(err);
         });
+        // A wall-clock deadline includes DNS, socket queues and a stalled body.
+        // Auth requests use it so a refresh cannot outlive its database lease.
+        if (options.timeoutMs) {
+            timeout = setTimeout(() => {
+                const error = new Error(`Request to ${hostname} timed out`);
+                error.code = "ETIMEDOUT";
+                req.destroy(error);
+                finish(error);
+            }, options.timeoutMs);
+            timeout.unref?.();
+        }
+        req.write(options.body || "");
+        req.end();
     });
 };
 
@@ -249,10 +266,10 @@ let cachedRiotHeaders = null;
 
 export const setRiotVersionData = (data) => {
     cachedRiotVersionData = data;
-    cachedRiotHeaders = {
+    cachedRiotHeaders = data ? {
         "X-Riot-ClientPlatform": clientPlatformBase64,
         "X-Riot-ClientVersion": data.riotClientVersion,
-    };
+    } : null;
 };
 
 export const getRiotVersionData = () => cachedRiotVersionData;

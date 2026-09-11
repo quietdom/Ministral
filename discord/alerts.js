@@ -2,7 +2,7 @@ import {
     removeDupeAlerts,
     wait
 } from "../misc/util.js";
-import { authUser, deleteUserAuth, getUser, getUserList, getAlertUserList } from "../valorant/auth.js";
+import { authUser, getUser, getUserList, getAlertUserList } from "../valorant/auth.js";
 import { getOffers } from "../valorant/shop.js";
 import { getSkin } from "../valorant/cache.js";
 import {
@@ -206,14 +206,18 @@ const processUserAlerts = async (id, initialShouldWait = false) => {
                 }
 
                 else if (offers.authFailure) {
+                    // Auth owns credential invalidation. Re-read after its
+                    // network calls so this alert cannot erase a newer login.
+                    const currentUser = getUser(valorantUser);
+                    if (!currentUser || currentUser.auth?.rso) break;
                     if (!credsExpiredAlerts) {
-                        if (valorantUser.authFailures < config.authFailureStrikes) {
-                            valorantUser.authFailures++;
+                        if (currentUser.authFailures < config.authFailureStrikes) {
+                            currentUser.authFailures++;
+                            saveUser(currentUser);
                             credsExpiredAlerts = userAlerts;
                         }
                     }
 
-                    deleteUserAuth(valorantUser);
                     break;
                 }
                 else {

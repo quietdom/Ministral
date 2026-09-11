@@ -1185,6 +1185,32 @@ test("accountSwitcher: switchAccount rejects out-of-range indexes instead of per
     deleteUserFromDb("switch-test-user");
 });
 
+test("userDatabase: saveUserToDb(user, true) never rolls back auth another shard already refreshed", () => {
+    initUserDatabase("data/test_users.db");
+    const puuid = "preserve-auth-puuid";
+    saveUserToDb({ id: "preserve-auth-user", currentAccount: 1, settings: {}, accounts: [
+        { puuid, userId: "preserve-auth-user", username: "A#1", region: "eu", auth: { rso: "old" }, alerts: [] }
+    ] });
+
+    // A metadata-only caller (settings change, alert cleanup) reads the whole
+    // record before doing its own unrelated write.
+    const staleSnapshot = getUserFromDb("preserve-auth-user");
+
+    // Meanwhile another shard refreshes the token.
+    const fresh = getUserFromDb("preserve-auth-user");
+    fresh.accounts[0].auth = { rso: "new" };
+    saveUserToDb(fresh);
+
+    // The metadata-only caller now persists its stale snapshot — this must
+    // not carry its stale auth back over the refreshed one.
+    staleSnapshot.settings = { changed: true };
+    saveUserToDb(staleSnapshot, true);
+
+    assert.deepEqual(getUserFromDb("preserve-auth-user").accounts[0].auth, { rso: "new" });
+
+    deleteUserFromDb("preserve-auth-user");
+});
+
 test("util: writeFileAtomic never leaves a half-written file in place", () => {
     const target = "data/atomic-test.json";
     try { fs.unlinkSync(target); } catch {}

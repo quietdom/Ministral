@@ -69,7 +69,7 @@ export const getSettings = (id) => {
 
     if (!json.settings) {
         json.settings = defaultSettings;
-        saveUserToDb(json);
+        saveUserToDb(json, true);
     } else {
         let changed = false;
 
@@ -87,7 +87,7 @@ export const getSettings = (id) => {
             }
         }
 
-        if (changed) saveUserToDb(json);
+        if (changed) saveUserToDb(json, true);
     }
 
     if (settingsCache.size >= MAX_SETTINGS_CACHE_SIZE) {
@@ -126,7 +126,7 @@ export const setSetting = async (interaction, setting, value, force = false) => 
         json.settings[setting] = computerifyValue(setValue);
     }
 
-    saveUserToDb(json);
+    saveUserToDb(json, true);
 
     settingsCache.delete(id);
     const { sendShardMessage } = await import("./shardMessage.js");
