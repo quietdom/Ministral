@@ -44,17 +44,13 @@ export const KCEmoji = async (interaction) => emojiToString(await getOrCreateEmo
 
 export const rarityEmoji = async (name, icon, interaction = null) => emojiToString(await getOrCreateEmoji(`${name}Rarity`, icon, interaction));
 
-export const agentEmoji = async (agentName, iconUrl, interaction = null) => {
-    if (!agentName || !iconUrl) return null;
-    const emojiName = ("Agent_" + agentName.replace(/[^a-zA-Z0-9]/g, "_")).slice(0, 32);
-    return getOrCreateEmoji(emojiName, iconUrl, interaction);
+const prefixedEmoji = (prefix) => async (name, iconUrl, interaction = null) => {
+    if (!name || !iconUrl) return null;
+    return getOrCreateEmoji((`${prefix}_${name.replace(/[^a-zA-Z0-9]/g, "_")}`).slice(0, 32), iconUrl, interaction);
 };
 
-export const queueEmoji = async (queueName, iconUrl, interaction = null) => {
-    if (!queueName || !iconUrl) return null;
-    const emojiName = ("Queue_" + queueName.replace(/[^a-zA-Z0-9]/g, "_")).slice(0, 32);
-    return getOrCreateEmoji(emojiName, iconUrl, interaction);
-};
+export const agentEmoji = prefixedEmoji("Agent");
+export const queueEmoji = prefixedEmoji("Queue");
 
 export const rankEmoji = async (tier, iconUrl, interaction = null) => {
     if (tier == null || !iconUrl) return null;
@@ -168,10 +164,7 @@ export const warmEmojiCache = async (client = null) => {
             if (agentReq.statusCode === 200) {
                 const agents = JSON.parse(agentReq.body).data;
                 for (const agent of agents) {
-                    if (agent.displayName && agent.displayIcon) {
-                        const emojiName = ("Agent_" + agent.displayName.replace(/[^a-zA-Z0-9]/g, "_")).slice(0, 32);
-                        await getOrCreateEmoji(emojiName, agent.displayIcon, { client: c });
-                    }
+                    await agentEmoji(agent.displayName, agent.displayIcon, { client: c });
                 }
             }
         } catch (e) {
