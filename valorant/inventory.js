@@ -1,33 +1,11 @@
-import { fetch, isMaintenance, safeJson, userRegion, riotClientHeaders } from "../misc/util.js";
-import { authUser, handleBadClaims, getUser } from "./auth.js";
+import { itemTypes, userRegion } from "../misc/util.js";
+import { authUser, getUser } from "./auth.js";
+import { riotJson } from "./riot.js";
 import config from "../misc/config.js";
 
-export const getItemEntitlements = async (user, itemTypeId, itemType = "item", _retried = false) => {
-    const req = await fetch(`https://pd.${userRegion(user)}.a.pvp.net/store/v1/entitlements/${user.puuid}/${itemTypeId}`, {
-        headers: {
-            "Authorization": "Bearer " + user.auth.rso,
-            "X-Riot-Entitlements-JWT": user.auth.ent,
-            ...riotClientHeaders(),
-        }
-    });
-
-    const json = safeJson(req.body);
-    if (!json) return { success: false, networkError: true };
-    if (json.httpStatus === 400 && json.errorCode === "BAD_CLAIMS") {
-        const result = await handleBadClaims(user);
-        if (result.retry && !_retried) {
-            user = getUser(user.id);
-            return await getItemEntitlements(user, itemTypeId, itemType, true);
-        }
-        return result;
-    } else if (isMaintenance(json)) {
-        return { success: false, maintenance: true };
-    }
-
-    return {
-        success: true,
-        entitlements: json
-    };
+export const getItemEntitlements = async (user, itemTypeId) => {
+    const res = await riotJson(user, `https://pd.${userRegion(user)}.a.pvp.net/store/v1/entitlements/${user.puuid}/${itemTypeId}`);
+    return res.success ? { success: true, entitlements: res.json } : res;
 };
 
 const skinCache = {};
@@ -46,7 +24,7 @@ export const getSkins = async (user, account = null) => {
     const authResult = await authUser(user.id, account);
     if (!authResult.success) return authResult;
 
-    const data = await getItemEntitlements(user, "e7c63390-eda7-46e0-bb7a-a6abdacd2433", "skins");
+    const data = await getItemEntitlements(user, itemTypes.SKIN);
     if (!data.success) return data;
 
     const skins = data.entitlements.Entitlements.map(ent => ent.ItemID);
@@ -66,7 +44,7 @@ export const getSkins = async (user, account = null) => {
 
 const loadoutCache = {};
 
-export const getLoadout = async (user, account = null, _retried = false) => {
+export const getLoadout = async (user, account = null) => {
     if (user.puuid in loadoutCache) {
         const cached = loadoutCache[user.puuid];
         const expiresIn = cached.timestamp - Date.now() + config.loadoutCacheExpiration;
@@ -82,45 +60,16 @@ export const getLoadout = async (user, account = null, _retried = false) => {
 
     user = getUser(user.id, account);
 
-    const req = await fetch(`https://pd.${userRegion(user)}.a.pvp.net/personalization/v2/players/${user.puuid}/playerloadout`, {
-        headers: {
-            "Authorization": "Bearer " + user.auth.rso,
-            "X-Riot-Entitlements-JWT": user.auth.ent,
-            ...riotClientHeaders(),
-        }
-    });
+    const base = `https://pd.${userRegion(user)}.a.pvp.net`;
+    const res = await riotJson(user, `${base}/personalization/v2/players/${user.puuid}/playerloadout`);
+    if (!res.success) return res;
 
-    const json = safeJson(req.body);
-    if (!json) return { success: false, networkError: true };
-    if (json.httpStatus === 400 && json.errorCode === "BAD_CLAIMS") {
-        const result = await handleBadClaims(user);
-        if (result.retry && !_retried) return await getLoadout(getUser(user.id, account), account, true);
-        return result;
-    } else if (isMaintenance(json)) {
-        return { success: false, maintenance: true };
-    }
-
-    const req2 = await fetch(`https://pd.${userRegion(user)}.a.pvp.net/favorites/v1/players/${user.puuid}/favorites`, {
-        headers: {
-            "Authorization": "Bearer " + user.auth.rso,
-            "X-Riot-Entitlements-JWT": user.auth.ent,
-            ...riotClientHeaders(),
-        }
-    });
-
-    const json2 = safeJson(req2.body);
-    if (!json2) return { success: false, networkError: true };
-    if (json2.httpStatus === 400 && json2.errorCode === "BAD_CLAIMS") {
-        const result = await handleBadClaims(user);
-        if (result.retry && !_retried) return await getLoadout(getUser(user.id, account), account, true);
-        return result;
-    } else if (isMaintenance(json2)) {
-        return { success: false, maintenance: true };
-    }
+    const res2 = await riotJson(user, `${base}/favorites/v1/players/${user.puuid}/favorites`);
+    if (!res2.success) return res2;
 
     const loadoutData = {
-        loadout: json,
-        favorites: json2,
+        loadout: res.json,
+        favorites: res2.json,
         timestamp: Date.now()
     };
 
@@ -128,7 +77,7 @@ export const getLoadout = async (user, account = null, _retried = false) => {
 
     return {
         success: true,
-        loadout: json,
-        favorites: json2
+        loadout: res.json,
+        favorites: res2.json
     };
 };
