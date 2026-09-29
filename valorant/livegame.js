@@ -43,6 +43,21 @@ const authHeaders = (user) => ({
     ...riotClientHeaders(),
 });
 
+/**
+ * Authenticated GLZ request; `body` (if given) is sent as JSON.
+ * Returns the response, or a { success: false, reason, ... } object on auth/user failure
+ * (it has no statusCode, so `resp.statusCode === 200` is simply false).
+ */
+const glzCall = async (id, account, method, path, body) => {
+    const auth = await authUser(id, account);
+    if (!auth.success) return { success: false, reason: "auth_failed", auth };
+    const user = getUser(id, account);
+    if (!user) return { success: false, reason: "no_user" };
+    const headers = authHeaders(user);
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    return fetch(glzUrl(user) + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+};
+
 // ──────────────────────────────────────────────
 // Static data caches (agents + competitive tiers)
 // ──────────────────────────────────────────────
@@ -149,9 +164,9 @@ export const resolveAgent = async (uuid) => {
 };
 
 /** Get all known playable agent UUIDs */
-export const getAllPlayableAgents = async () => {
+const getAllPlayableAgents = async () => {
     await loadAgents();
-    return Object.keys(agentsCache || {});
+    return Object.keys(agentsCache);
 };
 
 /** Resolve tier number (0-27) → {name, color, icon} */
@@ -182,7 +197,7 @@ const MAP_NAMES = {
     "/Game/Maps/Arena/Arena": "The Range",
 };
 
-export const resolveMapName = (mapId) =>
+const resolveMapName = (mapId) =>
     // API displayName takes priority — covers new maps (Corrode, etc.) automatically
     (mapNamesCache && mapNamesCache[mapId])
     ?? MAP_NAMES[mapId]
@@ -503,7 +518,7 @@ const probeState = async (user, path, idField) => {
  * or       { success, state: "not_queuing" }
  * or       { success: false, ... } on auth failure.
  */
-export const getPartyData = async (id, account = null, knownPartyId = undefined) => {
+const getPartyData = async (id, account = null, knownPartyId = undefined) => {
     const authResult = await authUser(id, account);
     if (!authResult.success) return { ...authResult, state: null };
 
@@ -540,22 +555,9 @@ export const getPartyData = async (id, account = null, knownPartyId = undefined)
     let queueId = partyJson.MatchmakingData?.QueueID ?? "";
     if (partyJson.State === "CUSTOM_GAME_SETUP") queueId = "custom";
 
-    if (partyJson.State !== "MATCHMAKING") {
-        return {
-            success: true,
-            state: "not_queuing",
-            matchId: partyId,
-            queueId,
-            eligibleQueues,
-            members,
-            inviteCode,
-            preferredGamePods
-        };
-    }
-
     return {
         success: true,
-        state: "queuing",
+        state: partyJson.State === "MATCHMAKING" ? "queuing" : "not_queuing",
         matchId: partyId,
         queueId,
         eligibleQueues,
@@ -566,62 +568,27 @@ export const getPartyData = async (id, account = null, knownPartyId = undefined)
 };
 
 export const makePartyCode = async (id, account, partyId) => {
-    const auth = await authUser(id, account);
-    if (!auth.success) return false;
-    const user = getUser(id, account);
-    if (!user) return false;
-    const base = glzUrl(user);
-    const headers = { ...authHeaders(user), "Content-Type": "application/json" };
-    const resp = await fetch(`${base}/parties/v1/parties/${partyId}/invitecode`, {
-        method: "POST",
-        headers,
-        body: "{}"
-    });
-    console.log(`[livegame] makePartyCode for ${partyId} on ${base} returned:`, resp.statusCode);
-    if (resp.statusCode === 200) {
-        return safeJson(resp.body)?.InviteCode || true;
-    }
-    return false;
+    const resp = await glzCall(id, account, "POST", `/parties/v1/parties/${partyId}/invitecode`, {});
+    console.log(`[livegame] makePartyCode for ${partyId} returned:`, resp.statusCode);
+    return resp.statusCode === 200 && (safeJson(resp.body)?.InviteCode || true);
 };
 
 export const removePartyCode = async (id, account, partyId) => {
-    const auth = await authUser(id, account);
-    if (!auth.success) return false;
-    const user = getUser(id, account);
-    if (!user) return false;
-    const base = glzUrl(user);
-    const headers = { ...authHeaders(user), "Content-Type": "application/json" };
-    const resp = await fetch(`${base}/parties/v1/parties/${partyId}/invitecode`, {
-        method: "DELETE",
-        headers
-    });
-    console.log(`[livegame] removePartyCode for ${partyId} on ${base} returned:`, resp.statusCode);
+    const resp = await glzCall(id, account, "DELETE", `/parties/v1/parties/${partyId}/invitecode`);
+    console.log(`[livegame] removePartyCode for ${partyId} returned:`, resp.statusCode);
     return resp.statusCode === 200;
 };
 
 export const joinPartyByCode = async (id, account, inviteCode) => {
-    const auth = await authUser(id, account);
-    if (!auth.success) return { success: false, reason: "auth_failed", auth };
-    const user = getUser(id, account);
-    if (!user) return { success: false, reason: "no_user" };
-
     const cleanCode = String(inviteCode || "").trim();
-    const base = glzUrl(user);
-    const headers = authHeaders(user);
-    const url = `${base}/parties/v1/players/joinbycode/${encodeURIComponent(cleanCode)}`;
-
-    console.log(`[livegame] joinPartyByCode calling ${url} for user ${user.puuid}`);
-    const resp = await fetch(url, {
-        method: "POST",
-        headers
-    });
+    const resp = await glzCall(id, account, "POST", `/parties/v1/players/joinbycode/${encodeURIComponent(cleanCode)}`);
+    if (resp.reason) return resp;
 
     const bodyJson = safeJson(resp.body);
-    console.log(`[livegame] joinPartyByCode for ${cleanCode} on ${base} returned: status=${resp.statusCode}, body=`, resp.body);
+    console.log(`[livegame] joinPartyByCode for ${cleanCode} returned: status=${resp.statusCode}, body=`, resp.body);
 
-    const isSuccess = resp.statusCode === 200 || resp.statusCode === 204;
     return {
-        success: isSuccess,
+        success: resp.statusCode === 200 || resp.statusCode === 204,
         statusCode: resp.statusCode,
         errorCode: bodyJson?.errorCode || bodyJson?.errorCodeName || null,
         errorMessage: bodyJson?.message || null,
@@ -633,67 +600,25 @@ export const joinPartyByCode = async (id, account, inviteCode) => {
 // Agent endpoints
 // ──────────────────────────────────────────────
 
-export const selectAgent = async (id, account, matchId, agentId) => {
-    const auth = await authUser(id, account);
-    if (!auth.success) return false;
-    const user = getUser(id, account);
-    if (!user) return false;
-    const base = glzUrl(user);
-    const headers = authHeaders(user);
+export const selectAgent = async (id, account, matchId, agentId) =>
+    (await glzCall(id, account, "POST", `/pregame/v1/matches/${matchId}/select/${agentId}`)).statusCode === 200;
 
-    const resp = await fetch(
-        `${base}/pregame/v1/matches/${matchId}/select/${agentId}`,
-        { method: "POST", headers }
-    );
-    return resp.statusCode === 200;
-};
+export const startQueue = async (id, account, partyId) =>
+    (await glzCall(id, account, "POST", `/parties/v1/parties/${partyId}/matchmaking/join`)).statusCode === 200;
 
-export const startQueue = async (id, account, partyId) => {
-    const auth = await authUser(id, account);
-    if (!auth.success) return false;
-    const user = getUser(id, account);
-    if (!user) return false;
-    const base = glzUrl(user);
-    const headers = authHeaders(user);
-    const resp = await fetch(`${base}/parties/v1/parties/${partyId}/matchmaking/join`, { method: "POST", headers });
-    return resp.statusCode === 200;
-};
-
-export const cancelQueue = async (id, account, partyId) => {
-    const auth = await authUser(id, account);
-    if (!auth.success) return false;
-    const user = getUser(id, account);
-    if (!user) return false;
-    const base = glzUrl(user);
-    const headers = authHeaders(user);
-    const resp = await fetch(`${base}/parties/v1/parties/${partyId}/matchmaking/leave`, { method: "POST", headers });
-    return resp.statusCode === 200;
-};
+export const cancelQueue = async (id, account, partyId) =>
+    (await glzCall(id, account, "POST", `/parties/v1/parties/${partyId}/matchmaking/leave`)).statusCode === 200;
 
 export const changeQueue = async (id, account, partyId, queueId) => {
-    const auth = await authUser(id, account);
-    if (!auth.success) return false;
-    const user = getUser(id, account);
-    if (!user) return false;
-    const base = glzUrl(user);
-    const headers = authHeaders(user);
-
     if (queueId === "custom") {
         console.log(`[livegame] Initiating transition to Custom Match via /makecustomgame for ${partyId}`);
-        const resp = await fetch(`${base}/parties/v1/parties/${partyId}/makecustomgame`, {
-            method: "POST",
-            headers
-        });
+        const resp = await glzCall(id, account, "POST", `/parties/v1/parties/${partyId}/makecustomgame`);
         console.log(`[livegame] Riot API Custom Match /makecustomgame lock returned:`, resp.statusCode, resp.body);
         return resp.statusCode === 200;
     }
 
     console.log(`[livegame] Initiating transition to standard queue ${queueId} via /queue for ${partyId}`);
-    const resp = await fetch(`${base}/parties/v1/parties/${partyId}/queue`, {
-        method: "POST",
-        headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ queueID: queueId })
-    });
+    const resp = await glzCall(id, account, "POST", `/parties/v1/parties/${partyId}/queue`, { queueID: queueId });
     console.log(`[livegame] Riot API Matchmaking /queue switch returned:`, resp.statusCode);
     return resp.statusCode === 200;
 };
@@ -723,7 +648,7 @@ export const getOwnedAgents = async (user) => {
     const allEntitlements = new Set([...owned, ...defaultAgents]);
 
     const allPlayables = await getAllPlayableAgents();
-    return allPlayables.filter(agentId => allEntitlements.has(agentId.toLowerCase()));
+    return allPlayables.filter(agentId => allEntitlements.has(agentId));
 };
 
 // ──────────────────────────────────────────────
@@ -736,7 +661,7 @@ export const getOwnedAgents = async (user) => {
  * or       { success, state: "not_in_pregame" }
  * or       { success: false, ... } on auth failure.
  */
-export const getPreGameData = async (id, account = null, knownMatchId = undefined) => {
+const getPreGameData = async (id, account = null, knownMatchId = undefined) => {
     const authResult = await authUser(id, account);
     if (!authResult.success) return { ...authResult, state: null };
 
@@ -826,7 +751,7 @@ export const getPreGameData = async (id, account = null, knownMatchId = undefine
  * or       { success, state: "not_in_game" }
  * or       { success: false, ... } on auth failure.
  */
-export const getInGameData = async (id, account = null, knownMatchId = undefined) => {
+const getInGameData = async (id, account = null, knownMatchId = undefined) => {
     const authResult = await authUser(id, account);
     if (!authResult.success) return { ...authResult, state: null };
 
@@ -1032,6 +957,19 @@ const COMBAT_STATS_CACHE_TTL = 1000 * 60 * 30; // 30 mins
  */
 const NO_COMBAT_STATS = () => ({ adr: 0, kd: "0", hs: 0 });
 
+const emptyTotals = () => ({ damage: 0, rounds: 0, kills: 0, deaths: 0, headshots: 0, bodyshots: 0, legshots: 0 });
+
+/** Totals across recent matches → { adr, kd, hs }, or null when no rounds were played. */
+const toStats = (t) => {
+    if (t.rounds <= 0) return null;
+    const totalShots = t.headshots + t.bodyshots + t.legshots;
+    return {
+        adr: Math.round(t.damage / t.rounds),
+        kd: (t.kills / Math.max(t.deaths, 1)).toFixed(2),
+        hs: totalShots > 0 ? Math.round((t.headshots / totalShots) * 100) : 0,
+    };
+};
+
 const fetchPlayerCombatStats = (user, puuids) => {
     const vapi = getVAPI();
     const region = userRegion(user);
@@ -1045,13 +983,7 @@ const fetchPlayerCombatStats = (user, puuids) => {
                 try {
                     const matchRes = await vapi.getMatchesByPUUID({ puuid, region, filter: "competitive", size: 5 });
                     if (matchRes?.data && Array.isArray(matchRes.data) && matchRes.data.length > 0) {
-                        let totalDamage = 0;
-                        let totalRounds = 0;
-                        let totalKills = 0;
-                        let totalDeaths = 0;
-                        let totalHeadshots = 0;
-                        let totalBodyshots = 0;
-                        let totalLegshots = 0;
+                        const t = emptyTotals();
 
                         for (const m of matchRes.data) {
                             if (currentSeasonId && m.metadata?.season_id && m.metadata.season_id.toLowerCase() !== currentSeasonId.toLowerCase()) {
@@ -1060,24 +992,17 @@ const fetchPlayerCombatStats = (user, puuids) => {
                             const pObj = m.players?.all_players?.find(p => p.puuid === puuid);
                             if (pObj) {
                                 const pStats = pObj.stats || {};
-                                totalDamage += pObj.damage_made || pStats.damage || pObj.damage || 0;
-                                totalKills += pStats.kills || pObj.kills || 0;
-                                totalDeaths += pStats.deaths || pObj.deaths || 0;
-                                totalHeadshots += pStats.headshots || pObj.headshots || 0;
-                                totalBodyshots += pStats.bodyshots || pObj.bodyshots || 0;
-                                totalLegshots += pStats.legshots || pObj.legshots || 0;
-                                totalRounds += m.metadata?.rounds_played || 0;
+                                t.damage += pObj.damage_made || pStats.damage || pObj.damage || 0;
+                                t.kills += pStats.kills || pObj.kills || 0;
+                                t.deaths += pStats.deaths || pObj.deaths || 0;
+                                t.headshots += pStats.headshots || pObj.headshots || 0;
+                                t.bodyshots += pStats.bodyshots || pObj.bodyshots || 0;
+                                t.legshots += pStats.legshots || pObj.legshots || 0;
+                                t.rounds += m.metadata?.rounds_played || 0;
                             }
                         }
 
-                        if (totalRounds > 0) {
-                            const totalShots = totalHeadshots + totalBodyshots + totalLegshots;
-                            stats = {
-                                adr: Math.round(totalDamage / totalRounds),
-                                kd: (totalKills / Math.max(totalDeaths, 1)).toFixed(2),
-                                hs: totalShots > 0 ? Math.round((totalHeadshots / totalShots) * 100) : 0,
-                            };
-                        }
+                        stats = toStats(t);
                     }
                 } catch (e) {
                     // Fallback to next strategy
@@ -1095,13 +1020,7 @@ const fetchPlayerCombatStats = (user, puuids) => {
                         const matchIds = (historyJson?.History || []).slice(0, 5).map(h => h.MatchID).filter(Boolean);
 
                         if (matchIds.length > 0) {
-                            let totalDamage = 0;
-                            let totalRounds = 0;
-                            let totalKills = 0;
-                            let totalDeaths = 0;
-                            let totalHeadshots = 0;
-                            let totalBodyshots = 0;
-                            let totalLegshots = 0;
+                            const t = emptyTotals();
 
                             const detailsResults = await Promise.allSettled(
                                 matchIds.map(mid =>
@@ -1118,35 +1037,28 @@ const fetchPlayerCombatStats = (user, puuids) => {
                                     }
                                     const playerObj = (match.players || []).find(p => p.subject === puuid);
                                     if (playerObj?.stats) {
-                                        totalKills += playerObj.stats.kills || 0;
-                                        totalDeaths += playerObj.stats.deaths || 0;
-                                        totalRounds += playerObj.stats.roundsPlayed || (match.roundResults?.length || 0);
+                                        t.kills += playerObj.stats.kills || 0;
+                                        t.deaths += playerObj.stats.deaths || 0;
+                                        t.rounds += playerObj.stats.roundsPlayed || (match.roundResults?.length || 0);
                                         for (const rd of (playerObj.roundDamage || [])) {
-                                            totalDamage += rd.damage || 0;
+                                            t.damage += rd.damage || 0;
                                         }
                                     }
                                     for (const rr of (match.roundResults || [])) {
                                         const pStats = (rr.playerStats || []).find(ps => ps.subject === puuid);
                                         for (const dmg of (pStats?.damage || [])) {
                                             if (!playerObj?.roundDamage || playerObj.roundDamage.length === 0) {
-                                                totalDamage += dmg.damage || 0;
+                                                t.damage += dmg.damage || 0;
                                             }
-                                            totalHeadshots += dmg.headshots || 0;
-                                            totalBodyshots += dmg.bodyshots || 0;
-                                            totalLegshots += dmg.legshots || 0;
+                                            t.headshots += dmg.headshots || 0;
+                                            t.bodyshots += dmg.bodyshots || 0;
+                                            t.legshots += dmg.legshots || 0;
                                         }
                                     }
                                 }
                             }
 
-                            if (totalRounds > 0) {
-                                const totalShots = totalHeadshots + totalBodyshots + totalLegshots;
-                                stats = {
-                                    adr: Math.round(totalDamage / totalRounds),
-                                    kd: (totalKills / Math.max(totalDeaths, 1)).toFixed(2),
-                                    hs: totalShots > 0 ? Math.round((totalHeadshots / totalShots) * 100) : 0,
-                                };
-                            }
+                            stats = toStats(t);
                         }
                     }
                 } catch (e) {
@@ -1195,7 +1107,7 @@ export const enrichPlayers = async (id, account, rawPlayers) => {
 
         // Resolve agent and tier icons/names in parallel
         const [agentInfo, currentTierInfo, peakTierInfo] = await Promise.all([
-            p.agentId ? resolveAgent(p.agentId) : Promise.resolve({ name: "Unknown", icon: null, role: null }),
+            resolveAgent(p.agentId),
             resolveTier(actualCurrentTier),
             resolveTier(mmr?.peakTier ?? 0),
         ]);
@@ -1390,31 +1302,17 @@ export const fetchLiveGame = async (id, account = null) => {
             enriched = await enrichPlayers(id, account, party.members);
         }
 
-        if (party.state === "queuing") {
-            return {
-                success: true,
-                state: "queuing",
-                matchId: party.matchId,
-                queueId: party.queueId,
-                allyPlayers: enriched,
-                eligibleQueues: party.eligibleQueues,
-                userPuuid: user.puuid,
-                inviteCode: party.inviteCode,
-                preferredGamePods: party.preferredGamePods
-            };
-        } else {
-            return {
-                success: true,
-                state: "not_in_game",
-                matchId: party.matchId,
-                queueId: party.queueId,
-                allyPlayers: enriched,
-                eligibleQueues: party.eligibleQueues,
-                userPuuid: user.puuid,
-                inviteCode: party.inviteCode,
-                preferredGamePods: party.preferredGamePods
-            };
-        }
+        return {
+            success: true,
+            state: party.state === "queuing" ? "queuing" : "not_in_game",
+            matchId: party.matchId,
+            queueId: party.queueId,
+            allyPlayers: enriched,
+            eligibleQueues: party.eligibleQueues,
+            userPuuid: user.puuid,
+            inviteCode: party.inviteCode,
+            preferredGamePods: party.preferredGamePods
+        };
     }
 
     return { success: true, state: "not_in_game" };
