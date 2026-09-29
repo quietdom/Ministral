@@ -151,8 +151,6 @@ export const getStatsFor = (uuid) => {
     return {
         shopsIncluded: overallStats.shopsIncluded || 0,
         count: count,
-        amount: count,
-        percentage: Math.round((count / (overallStats.shopsIncluded || 1)) * 1000) / 10,
         rank: [rank, entries.length]
     };
 };
