@@ -116,7 +116,8 @@ const buildCategory = (categoryStrings, fallbackCategory) =>
 
 const languages = {};
 export const loadLanguages = () => {
-    for (const language in discLanguageNames) {
+    // default first, so every other language can fall back to its strings
+    for (const language of [DEFAULT_LANG, ...Object.keys(discLanguageNames).filter(l => l !== DEFAULT_LANG)]) {
         try {
             const languageStrings = JSON.parse(fs.readFileSync(`languages/${language}.json`, 'utf-8'));
             const languageHandler = {};
