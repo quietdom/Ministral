@@ -28,7 +28,7 @@ export const saveUserJson = (id, json) => {
     saveUserToDb(json, true);
 };
 
-export const saveUser = (user, account = null) => {
+export const saveUser = (user) => {
     // A command may have read this user before auth refreshed on another shard
     // (or while rendering the shop). Metadata saves must never write tokens.
     if (user.puuid && updateSingleAccountInDb(user, true)) {
@@ -36,27 +36,18 @@ export const saveUser = (user, account = null) => {
     }
 
     runUserDbTransaction(() => {
-        const userJson = getUserFromDb(user.id);
-        if (!userJson) {
+        if (!getUserFromDb(user.id)) {
             saveUserToDb({
                 id: user.id,
                 accounts: [user],
                 currentAccount: 1,
                 settings: defaultSettings
             });
-            return;
-        }
-
-        const foundIndex = userJson.accounts.findIndex(a => a.puuid === user.puuid);
-        if (foundIndex !== -1) {
-            userJson.accounts[foundIndex] = { ...user, auth: userJson.accounts[foundIndex].auth };
-        } else if (account && account <= userJson.accounts.length) {
-            userJson.accounts[account - 1] = { ...user, auth: userJson.accounts[account - 1].auth };
         } else {
-            userJson.accounts.push(user);
+            // The account was removed/replaced since the caller read it. Never
+            // resurrect it with stale tokens or overwrite another slot (addUser adds accounts).
+            console.log(`[saveUser] Account ${user.puuid} of ${user.id} no longer exists, not saving`);
         }
-
-        saveUserToDb(userJson);
     });
 };
 
