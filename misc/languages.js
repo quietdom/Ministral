@@ -111,16 +111,8 @@ export const discLanguageNames = {
 export const DEFAULT_LANG = 'en-GB';
 export const DEFAULT_VALORANT_LANG = 'en-US';
 
-const buildCategoryProxy = (categoryStrings = {}, fallbackCategory = null) => {
-    const target = (categoryStrings && typeof categoryStrings === "object") ? categoryStrings : {};
-    return new Proxy(target, {
-        get(targetObj, prop) {
-            if (prop in targetObj) return targetObj[prop];
-            if (fallbackCategory && prop in fallbackCategory) return fallbackCategory[prop];
-            return undefined;
-        }
-    });
-};
+const buildCategory = (categoryStrings, fallbackCategory) =>
+    ({ ...fallbackCategory, ...(typeof categoryStrings === "object" ? categoryStrings : null) });
 
 const languages = {};
 export const loadLanguages = () => {
@@ -131,14 +123,14 @@ export const loadLanguages = () => {
 
             for (const category in languageStrings) {
                 const fallbackCategory = language === DEFAULT_LANG ? null : languages[DEFAULT_LANG]?.[category];
-                languageHandler[category] = buildCategoryProxy(languageStrings[category], fallbackCategory);
+                languageHandler[category] = buildCategory(languageStrings[category], fallbackCategory);
             }
 
             languages[language] = new Proxy(languageHandler, {
                 get(target, prop) {
                     if (prop in target) return target[prop];
                     const fallbackCategory = language === DEFAULT_LANG ? null : languages[DEFAULT_LANG]?.[prop];
-                    return buildCategoryProxy({}, fallbackCategory);
+                    return buildCategory(null, fallbackCategory);
                 }
             });
         } catch (e) {

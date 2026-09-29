@@ -84,6 +84,20 @@ test("saving a notice from before refresh cannot restore the old refresh token",
     assert.equal(getUser("test-user").lastNoticeSeen, "new notice");
 });
 
+test("saving a removed account never overwrites or deletes the account now in its slot", () => {
+    const removed = seed();
+    saveUserToDb({ id: "test-user", currentAccount: 1, settings: {}, accounts: [
+        { ...removed, puuid: "other-puuid", username: "Other#000", auth: { rso: jwt(), ent: "other-ent", refresh_token: "other-refresh" } }
+    ] });
+    removed.username = "Stale#000";
+    saveUser(removed, 1);
+    const accounts = getUser("test-user", 1);
+    assert.equal(accounts.puuid, "other-puuid");
+    assert.equal(accounts.username, "Other#000");
+    assert.equal(accounts.auth.refresh_token, "other-refresh");
+    assert.ok(!getUser(removed));
+});
+
 test("an entitlement outage after BAD_CLAIMS preserves the login", async t => {
     const user = seed({ rso: jwt(), ent: "stale-ent", refresh_token: "refresh-1" });
     mockRiot(t, () => ({ status: 503, body: "Service unavailable" }));
@@ -265,6 +279,20 @@ test("timing out on another shard's lease never sends a competing refresh", asyn
     assert.equal(result.networkError, true);
     assert.equal(calls.length, 0);
     assert.equal(getUser(user).auth.refresh_token, "refresh-1");
+});
+
+test("a successful refresh that outlives the lease is still saved", async t => {
+    seed();
+    const realNow = Date.now();
+    let offset = 0;
+    t.mock.method(Date, "now", () => realNow + offset);
+    mockRiot(t, ({ url }) => {
+        if (!url.endsWith("/token")) return { body: { entitlements_token: "new-ent" } };
+        offset = 61000; // suspended past the 60s lease during the request
+        return { body: { access_token: jwt(7200), refresh_token: "refresh-2" } };
+    });
+    assert.equal((await refreshToken("test-user")).success, true);
+    assert.equal(getUser("test-user").auth.refresh_token, "refresh-2");
 });
 
 test("HTTP deadline aborts a stalled authentication request", async t => {

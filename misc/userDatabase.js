@@ -143,31 +143,31 @@ const prepareStatements = () => {
     };
 };
 
+const rowToAccount = (row, userId) => ({
+    id: userId,
+    puuid: row.puuid,
+    username: row.username,
+    region: row.region,
+    auth: safeJsonParse(row.auth, {}, "account.auth"),
+    alerts: removeDupeAlerts(row.alerts ? safeJsonParse(row.alerts, [], "account.alerts") : []),
+    authFailures: row.authFailures,
+    lastFetchedData: row.lastFetchedData,
+    lastNoticeSeen: row.lastNoticeSeen,
+    lastSawEasterEgg: row.lastSawEasterEgg
+});
+
 /**
  * @param {string} id
  * @returns {UserData|null}
  */
 export const getUserFromDb = (id) => {
-    if (!id || !db || !stmts?.getUser) return null;
+    if (!id || !db) return null;
     const userRow = stmts.getUser.get(id);
     if (!userRow) return null;
 
-    const accountRows = stmts.getAccounts ? stmts.getAccounts.all(id) : [];
-
     return {
         id: userRow.id,
-        accounts: accountRows.map(row => ({
-            id: userRow.id,
-            puuid: row.puuid,
-            username: row.username,
-            region: row.region,
-            auth: safeJsonParse(row.auth, {}, "account.auth"),
-            alerts: removeDupeAlerts(row.alerts ? safeJsonParse(row.alerts, [], "account.alerts") : []),
-            authFailures: row.authFailures,
-            lastFetchedData: row.lastFetchedData,
-            lastNoticeSeen: row.lastNoticeSeen,
-            lastSawEasterEgg: row.lastSawEasterEgg
-        })),
+        accounts: stmts.getAccounts.all(id).map(row => rowToAccount(row, userRow.id)),
         currentAccount: userRow.currentAccount,
         settings: safeJsonParse(userRow.settings, {}, "user.settings")
     };
@@ -234,41 +234,28 @@ export const deleteUserFromDb = (id) => {
 };
 
 export const getAccountByPuuid = (puuid) => {
-    if (!puuid || !db || !stmts?.getAccountByPuuid) return null;
+    if (!puuid || !db) return null;
     const row = stmts.getAccountByPuuid.get(puuid);
-    if (!row) return null;
-
-    return {
-        id: row.userId,
-        puuid: row.puuid,
-        username: row.username,
-        region: row.region,
-        auth: safeJsonParse(row.auth, {}, "account.auth"),
-        alerts: removeDupeAlerts(row.alerts ? safeJsonParse(row.alerts, [], "account.alerts") : []),
-        authFailures: row.authFailures,
-        lastFetchedData: row.lastFetchedData,
-        lastNoticeSeen: row.lastNoticeSeen,
-        lastSawEasterEgg: row.lastSawEasterEgg
-    };
+    return row ? rowToAccount(row, row.userId) : null;
 };
 
 export const getAllUserIds = () => {
-    if (!db || !stmts?.getAllUserIds) return [];
+    if (!db) return [];
     return stmts.getAllUserIds.all().map(row => row.id);
 };
 
 export const getUserIdsWithAlertsOrDailyShop = () => {
-    if (!db || !stmts?.getUserIdsWithAlertsOrDailyShop) return [];
+    if (!db) return [];
     return stmts.getUserIdsWithAlertsOrDailyShop.all().map(row => row.id);
 };
 
 export const deleteAccountFromDb = (puuid) => {
-    if (!puuid || !db || !stmts?.deleteAccount) return;
+    if (!puuid || !db) return;
     stmts.deleteAccount.run(puuid);
 };
 
 export const updateSingleAccountInDb = (account, preserveAuth = false) => {
-    if (!account?.puuid || !db || !stmts?.updateSingleAccount) return false;
+    if (!account?.puuid || !db) return false;
     const result = stmts.updateSingleAccount.run(
         account.username || "",
         account.region || null,
@@ -290,7 +277,7 @@ export const updateSingleAccountInDb = (account, preserveAuth = false) => {
 // Compare OAuth credentials, not entitlements: an entitlement repair while
 // /token is in flight must not prevent saving its rotated refresh token.
 export const updateAccountAuthInDb = (user, expectedAuth, auth, resetFailures = false) => {
-    if (!user?.puuid || !db || !stmts?.updateAccountAuth) return false;
+    if (!user?.puuid || !db) return false;
     return stmts.updateAccountAuth.run(
         JSON.stringify(auth), resetFailures ? 1 : 0, Date.now(),
         user.puuid, user.id, expectedAuth?.rso ?? null,
@@ -300,14 +287,14 @@ export const updateAccountAuthInDb = (user, expectedAuth, auth, resetFailures = 
 
 /** Try to claim `key` for `ownerId`. Returns false if another owner holds a live claim. */
 export const acquireRefreshLock = (key, ownerId, ttlMs) => {
-    if (!key || !db || !stmts?.acquireRefreshLock) return false;
+    if (!key || !db) return false;
     const result = stmts.acquireRefreshLock.run(key, ownerId, Date.now(), ttlMs);
     return result.changes > 0;
 };
 
 /** Release `key`, but only if `ownerId` still holds it (a stolen lock isn't ours to release). */
 export const releaseRefreshLock = (key, ownerId) => {
-    if (!key || !db || !stmts?.releaseRefreshLock) return;
+    if (!key || !db) return;
     stmts.releaseRefreshLock.run(key, ownerId);
 };
 

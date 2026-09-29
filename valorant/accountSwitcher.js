@@ -9,10 +9,10 @@ import {
     updateSingleAccountInDb
 } from "../misc/userDatabase.js";
 
-export const readUserJson = (id) => getUserFromDb(id);
+export { getUserFromDb as readUserJson };
 
 export const getUserJson = (id, account = null) => {
-    const user = readUserJson(id);
+    const user = getUserFromDb(id);
     if (!user) return null;
 
     account = account || user.currentAccount || 1;
@@ -28,7 +28,7 @@ export const saveUserJson = (id, json) => {
     saveUserToDb(json, true);
 };
 
-export const saveUser = (user, account = null) => {
+export const saveUser = (user) => {
     // A command may have read this user before auth refreshed on another shard
     // (or while rendering the shop). Metadata saves must never write tokens.
     if (user.puuid && updateSingleAccountInDb(user, true)) {
@@ -36,27 +36,18 @@ export const saveUser = (user, account = null) => {
     }
 
     runUserDbTransaction(() => {
-        const userJson = getUserFromDb(user.id);
-        if (!userJson) {
+        if (!getUserFromDb(user.id)) {
             saveUserToDb({
                 id: user.id,
                 accounts: [user],
                 currentAccount: 1,
                 settings: defaultSettings
             });
-            return;
-        }
-
-        const foundIndex = userJson.accounts.findIndex(a => a.puuid === user.puuid);
-        if (foundIndex !== -1) {
-            userJson.accounts[foundIndex] = { ...user, auth: userJson.accounts[foundIndex].auth };
-        } else if (account && account <= userJson.accounts.length) {
-            userJson.accounts[account - 1] = { ...user, auth: userJson.accounts[account - 1].auth };
         } else {
-            userJson.accounts.push(user);
+            // The account was removed/replaced since the caller read it. Never
+            // resurrect it with stale tokens or overwrite another slot (addUser adds accounts).
+            console.log(`[saveUser] Account ${user.puuid} of ${user.id} no longer exists, not saving`);
         }
-
-        saveUserToDb(userJson);
     });
 };
 
@@ -130,13 +121,13 @@ export const deleteWholeUser = async (id) => {
 };
 
 export const getNumberOfAccounts = (id) => {
-    const user = readUserJson(id);
+    const user = getUserFromDb(id);
     if (!user) return 0;
     return user.accounts.length;
 };
 
 export const switchAccount = (id, accountNumber) => {
-    const userJson = readUserJson(id);
+    const userJson = getUserFromDb(id);
     if (!userJson) return null;
 
     // Validate here rather than at each call site. Both callers can hand this
@@ -153,13 +144,13 @@ export const switchAccount = (id, accountNumber) => {
 };
 
 export const getAccountWithPuuid = (id, puuid) => {
-    const userJson = readUserJson(id);
+    const userJson = getUserFromDb(id);
     if (!userJson) return null;
     return userJson.accounts.find(a => a.puuid === puuid) || null;
 };
 
 export const findTargetAccountIndex = (id, query) => {
-    const userJson = readUserJson(id);
+    const userJson = getUserFromDb(id);
     if (!userJson) return null;
 
     let index = userJson.accounts.findIndex(a => a.username === query || a.puuid === query);
