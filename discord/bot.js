@@ -808,7 +808,6 @@ client.on("messageCreate", async (message) => {
                 const s = "Here is the config.json the bot currently has loaded:```json\n" + JSON.stringify({
                     ...config,
                     token: "[redacted]",
-                    "githubToken": config.githubToken ? "[redacted]" : config.githubToken,
                     "HDevToken": config.HDevToken ? "[redacted]" : config.HDevToken
                 }, null, 2) + "```";
                 await message.reply(s);
