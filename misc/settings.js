@@ -135,11 +135,6 @@ export const setSetting = async (interaction, setting, value, force = false) => 
     return json.settings[setting];
 };
 
-export const registerInteractionLocale = async (interaction) => {
-    // Dynamic locale resolution handles 'Automatic' via interaction context without DB writes.
-    // Explicit user locale preferences are set via /settings command.
-};
-
 export const settingName = (setting, interaction) => {
     return s(interaction).settings[setting];
 };
