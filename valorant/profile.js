@@ -5,9 +5,10 @@ const getVAPI = () => {
     if (!VAPI && config.HDevToken) VAPI = new unofficialValorantApi(config.HDevToken);
     return VAPI;
 }
-import { ordinalSuffix, fetch, userRegion, riotClientHeaders } from "../misc/util.js";
+import { ordinalSuffix, fetch, userRegion } from "../misc/util.js";
 import { s } from "../misc/languages.js";
 import { authUser, getUser } from "./auth.js";
+import { riotAuthHeaders } from "./riot.js";
 
 export const getAccountXP = async (user, account = null) => {
     if (!user) return null;
@@ -18,11 +19,7 @@ export const getAccountXP = async (user, account = null) => {
         if (!uAuthed?.auth?.rso) return null;
         const region = userRegion(uAuthed);
         const res = await fetch(`https://pd.${region}.a.pvp.net/account-xp/v1/players/${uAuthed.puuid}`, {
-            headers: {
-                "Authorization": "Bearer " + uAuthed.auth.rso,
-                "X-Riot-Entitlements-JWT": uAuthed.auth.ent,
-                ...riotClientHeaders(),
-            }
+            headers: riotAuthHeaders(uAuthed)
         });
         if (res.statusCode === 200) {
             const json = JSON.parse(res.body);
@@ -80,6 +77,8 @@ export const TIER_NAMES = [
     "Radiant"
 ];
 
+const tierName = (...names) => names.find(Boolean) || "Unranked";
+
 export const getAccountInfo = async (user, interaction) => {
     if (!getVAPI()) return { success: false, error: "API client is not initialized yet. Please try again in a moment." };
     let cache = getCache(user, 'account');
@@ -111,18 +110,8 @@ export const getAccountInfo = async (user, interaction) => {
     const currentData = mmrData?.data?.current_data || {};
     const highestRank = mmrData?.data?.highest_rank || {};
 
-    const resolvedCurrentTier = currentData.currenttier_patched
-        || currentData.currenttierpatched
-        || (currentData.currenttier != null ? TIER_NAMES[currentData.currenttier] : null)
-        || "Unranked";
-
-    const resolvedPeakTier = highestRank.patched_tier
-        || highestRank.patchedtier
-        || (highestRank.tier != null ? TIER_NAMES[highestRank.tier] : null)
-        || "Unranked";
-
-    currentData.currenttier_patched = resolvedCurrentTier;
-    highestRank.patched_tier = resolvedPeakTier;
+    currentData.currenttier_patched = tierName(currentData.currenttier_patched, currentData.currenttierpatched, TIER_NAMES[currentData.currenttier]);
+    highestRank.patched_tier = tierName(highestRank.patched_tier, highestRank.patchedtier, TIER_NAMES[highestRank.tier]);
 
     const mmr = { current_data: currentData, highest_rank: highestRank };
     const data = { account: accountData.data, mmr: mmr };
@@ -226,11 +215,7 @@ export const fetchMatchHistory = async (interaction, user) => {
             data.player.mmr = matchMMR.mmr_change_to_last_game;
             if (typeof data.player.mmr === "number" && data.player.mmr > 0) data.player.mmr = `+${data.player.mmr}`;
             data.player.currentTierImageUrl = matchMMR.images?.large || matchMMR.images?.small;
-            data.player.currenttier_patched = matchMMR.currenttier_patched
-                || matchMMR.currenttierpatched
-                || (matchMMR.tier != null ? TIER_NAMES[matchMMR.tier] : null)
-                || (matchMMR.currenttier != null ? TIER_NAMES[matchMMR.currenttier] : null)
-                || "Unranked";
+            data.player.currenttier_patched = tierName(matchMMR.currenttier_patched, matchMMR.currenttierpatched, TIER_NAMES[matchMMR.tier], TIER_NAMES[matchMMR.currenttier]);
             data.player.ranking_in_tier = matchMMR.ranking_in_tier;
         }
         matches.push(data);
