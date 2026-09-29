@@ -162,16 +162,9 @@ export const loadSkinsJSON = async (filename = "data/skins.json") => {
     // Assign all fields synchronously (single tick, no interleaving possible)
     weapons = jsonData.weapons;
     if (jsonData.skins) {
+        // re-key by uuid: older files also stored level/chroma uuid aliases
         skins = { version: jsonData.skins.version };
-        const seen = new Set();
-        for (const key of Object.keys(jsonData.skins)) {
-            if (key === "version") continue;
-            const s = jsonData.skins[key];
-            if (s && typeof s === "object" && s.uuid && !seen.has(s.uuid)) {
-                seen.add(s.uuid);
-                skins[s.uuid] = s;
-            }
-        }
+        for (const s of Object.values(jsonData.skins)) if (s?.uuid) skins[s.uuid] = s;
     } else {
         skins = jsonData.skins;
     }
@@ -212,20 +205,7 @@ const buildSkinIndices = () => {
 };
 
 export const saveSkinsJSON = (filename = "data/skins.json") => {
-    let cleanSkins = skins;
-    if (skins && typeof skins === "object") {
-        cleanSkins = { version: skins.version };
-        const seen = new Set();
-        for (const key of Object.keys(skins)) {
-            if (key === "version") continue;
-            const s = skins[key];
-            if (s && typeof s === "object" && s.uuid && !seen.has(s.uuid)) {
-                seen.add(s.uuid);
-                cleanSkins[s.uuid] = s;
-            }
-        }
-    }
-    writeFileAtomic(filename, JSON.stringify({ formatVersion, gameVersion, weapons, skins: cleanSkins, prices, bundles, rarities, buddies, flexes, sprays, cards, titles, battlepass }));
+    writeFileAtomic(filename, JSON.stringify({ formatVersion, gameVersion, weapons, skins, prices, bundles, rarities, buddies, flexes, sprays, cards, titles, battlepass }));
     skinsSaveDirty = false;
     
     sendShardMessage({ type: "skinsReload" });
@@ -312,10 +292,7 @@ const _fetchDataImpl = async (types = null, checkVersion = false) => {
             dataFullyLoaded = true;
         }
 
-        saveSkinsJSON();
-
-        // we fetched the skins, tell other shards to load them
-        sendShardMessage({ type: "skinsReload" });
+        saveSkinsJSON(); // also tells other shards to reload
     } catch (e) {
         console.error("There was an error while trying to fetch skin data!");
         console.error(e);
@@ -715,23 +692,14 @@ export const getSkin = async (uuid, reloadData = true) => {
     if (reloadData) await fetchData([skins, prices]);
     if (!uuid) return null;
 
-    const skin = skinLookupMap.get(uuid) || (skins && skins[uuid]) || null;
-    if (!skin || typeof skin !== "object") return null;
-
-    skin.price = await getPrice(uuid, skin);
-    return skin;
-}
-
-export const getSkinFromSkinUuid = async (uuid, reloadData = true) => {
-    if (reloadData) await fetchData([skins, prices]);
-    if (!uuid) return null;
-
-    const skin = skinLookupMap.get(uuid) || (skins && skins[uuid]) || null;
-    if (!skin || typeof skin !== "object") return null;
+    const skin = skinLookupMap.get(uuid);
+    if (!skin) return null;
 
     skin.price = await getPrice(skin.uuid, skin);
     return skin;
 }
+
+export const getSkinFromSkinUuid = getSkin;
 
 export const getWeapon = async (uuid) => {
     await fetchData([skins]);
