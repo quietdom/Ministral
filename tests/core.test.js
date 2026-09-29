@@ -461,8 +461,6 @@ test("stats: getStatsFor returns valid ranking and statsForSkinEmbed formats saf
     const populatedStats = {
         shopsIncluded: 100,
         count: 25,
-        amount: 25,
-        percentage: 25,
         rank: [1, 50]
     };
     const populatedEmbed = await statsForSkinEmbed(mockSkin, populatedStats, mockInteraction);
@@ -1256,7 +1254,7 @@ test("stats: old day buckets are pruned and rank reflects counts, not insertion 
     cfg.trackStoreStats = true;
     cfg.statsExpirationDays = 14;
 
-    const { loadStats, getStatsFor, flushStats } = await import("../misc/stats.js?prune-test");
+    const { loadStats, getStatsFor, flushStats, addStore, getOverallStats } = await import("../misc/stats.js?prune-test");
 
     loadStats();
     // The stale bucket predates statsExpirationDays, so its item is gone —
@@ -1269,6 +1267,11 @@ test("stats: old day buckets are pruned and rank reflects counts, not insertion 
     // addStore increments in place without re-sorting, so it drifted.
     assert.deepEqual(getStatsFor("skin-fresh").rank, [1, 1]);
     assert.deepEqual(getStatsFor("nonexistent").rank, [0, 1]);
+
+    // addStore increments in place; /stats pages through getOverallStats, which must stay sorted.
+    await addStore("p3", ["skin-new"]);
+    await addStore("p4", ["skin-new"]);
+    assert.deepEqual(Object.keys(getOverallStats().items), ["skin-new", "skin-fresh"]);
 
     // Pruning schedules a debounced save; drain it rather than leaving a timer
     // that writes to the real stats file after the suite finishes.

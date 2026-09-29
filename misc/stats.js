@@ -11,6 +11,7 @@ let overallStats = {
     items: {}
 };
 let statsLoaded = false;
+let itemsUnsorted = false; // addStore bumps counts in place; getOverallStats re-sorts lazily
 let statsDirty = false;
 let saveDebounceTimer = null;
 const SAVE_DEBOUNCE_MS = 5000;
@@ -158,6 +159,10 @@ export const getStatsFor = (uuid) => {
 
 export const getOverallStats = () => {
     loadStats();
+    if (itemsUnsorted) {
+        overallStats.items = Object.fromEntries(Object.entries(overallStats.items).sort(([, a], [, b]) => b - a));
+        itemsUnsorted = false;
+    }
     return overallStats;
 };
 
@@ -186,6 +191,7 @@ export const addStore = async (puuid, items) => {
     }
     todayStats.shopsIncluded++;
     overallStats.shopsIncluded++;
+    itemsUnsorted = true;
 
     debouncedSaveStats();
 };
