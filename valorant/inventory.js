@@ -64,7 +64,7 @@ export const getLoadout = async (user, account = null) => {
     // Any other error body (404/5xx JSON) has no Guns; caching it as a loadout would
     // render an empty showcase until the cache expires.
     const res = await riotJson(user, `${base}/personalization/v2/players/${user.puuid}/playerloadout`, {
-        valid: (req, json) => Array.isArray(json?.Guns),
+        valid: (req, json) => Array.isArray(json?.Guns) || console.error(`[getLoadout] unexpected playerloadout response (${req.statusCode}): ${json?.errorCode || Object.keys(json || {}).join(",")}`),
     });
     if (!res.success) return res;
 

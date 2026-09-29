@@ -1046,6 +1046,7 @@ export const skinCollectionSingleEmbed = async (interaction, id, user, { loadout
 
     const usernameText = getCollectionUsernameText(interaction, id, user, someoneElseUsedCommand);
 
+    if (categoryFields.length === 0) console.warn(`[collection] empty showcase for ${id}: Guns=${loadout?.Guns?.length ?? "none"}, unresolved SkinIDs=${(loadout?.Guns || []).map(g => g?.SkinID).filter(Boolean).join(",")}`);
     const emptySprayIcon = categoryFields.length === 0 ? await getRunninOnEmptySprayIcon() : null;
     const embed = {
         title: s(interaction).info.COLLECTION_HEADER.f({ u: usernameText }, id),
