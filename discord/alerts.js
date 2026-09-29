@@ -19,18 +19,13 @@ import {
     discordTag
 } from "./embed.js";
 import config from "../misc/config.js";
+import { getClient } from "../misc/client.js";
 import { l, s } from "../misc/languages.js";
 import { readUserJson, saveUser, saveUserJson } from "../valorant/accountSwitcher.js";
 import { sendShardMessageForChannel, onShardMessage } from "../misc/shardMessage.js";
 import { VPEmoji } from "./emoji.js";
 import { getSetting } from "../misc/settings.js";
 import { ActionRowBuilder } from "discord.js";
-
-let alertsClient = null;
-export const setAlertsClient = (client) => {
-    alertsClient = client;
-};
-const getClient = () => alertsClient;
 
 /* Alert format: {
  *     uuid: skin uuid

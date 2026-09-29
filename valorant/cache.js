@@ -1,15 +1,12 @@
 import { fetch, fetchRiotVersionData, itemTypes, safeJson, writeFileAtomic } from "../misc/util.js";
 import config from "../misc/config.js";
+import { getClient } from "../misc/client.js";
 import fuzzysort from "fuzzysort";
 import fs from "fs";
 import { DEFAULT_VALORANT_LANG, discToValLang } from "../misc/languages.js";
 import { sendShardMessage } from "../misc/shardMessage.js";
 
-let cacheClient = null;
-export const setCacheClient = (c) => {
-    cacheClient = c;
-};
-const isShardZero = () => !cacheClient?.shard || cacheClient.shard.ids[0] === 0;
+const isShardZero = () => !getClient()?.shard || getClient().shard.ids[0] === 0;
 
 /**
  * Parse a valorant-api.com response, or throw something readable.

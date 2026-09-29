@@ -18,6 +18,7 @@ import {
     WEAPON_CATEGORIES
 } from "../misc/util.js";
 import config from "../misc/config.js";
+import { getClient } from "../misc/client.js";
 import { DEFAULT_LANG, DEFAULT_VALORANT_LANG, discToValLang, l, s, hideUsername } from "../misc/languages.js";
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, escapeMarkdown, EmbedBuilder, MessageFlags, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, PermissionsBitField } from "discord.js";
 import { getStatsFor } from "../misc/stats.js";
@@ -31,18 +32,14 @@ import { getBattlepassProgress } from "../valorant/battlepass.js";
 import { getLoadout, getSkins } from "../valorant/inventory.js";
 import { TIER_NAMES, getAccountXP } from "../valorant/profile.js";
 
-let embedClient = null;
-export const setEmbedClient = (client) => {
-    embedClient = client;
-};
-const getClient = (interaction = null) => interaction?.client || embedClient;
+const clientOf = (interaction = null) => interaction?.client || getClient();
 
 const channelGuildCache = new Map();
 const CHANNEL_GUILD_CACHE_TTL_MS = 10 * 60 * 1000;
 
 export const fetchChannel = async (channelId, interaction = null) => {
     try {
-        const client = getClient(interaction);
+        const client = clientOf(interaction);
         if (!client) return null;
         return await client.channels.fetch(channelId);
     } catch {
@@ -54,7 +51,7 @@ export const getChannelGuildId = async (channelId, interaction = null) => {
     const cached = channelGuildCache.get(channelId);
     if (cached && Date.now() - cached.at < CHANNEL_GUILD_CACHE_TTL_MS) return cached.guildId;
 
-    const client = getClient(interaction);
+    const client = clientOf(interaction);
     if (!client?.shard) return null;
 
     let guildId;
@@ -71,7 +68,7 @@ export const getChannelGuildId = async (channelId, interaction = null) => {
 
 export const canSendMessages = (channel, interaction = null) => {
     if (!channel || !channel.guild) return true;
-    const client = getClient(interaction);
+    const client = clientOf(interaction);
     const me = channel.guild.members.me || (client?.user ? channel.guild.members.cache.get(client.user.id) : null);
     if (!me) return true;
     const permissions = channel.permissionsFor(me);
@@ -83,7 +80,7 @@ export const canSendMessages = (channel, interaction = null) => {
 export const canEditInteraction = (interaction) => Date.now() - interaction.createdTimestamp < 14.8 * 60 * 1000;
 
 export const discordTag = (id, interaction = null) => {
-    const client = getClient(interaction);
+    const client = clientOf(interaction);
     const user = client?.users?.cache?.get(id);
     return user ? (user.discriminator && user.discriminator !== "0" ? `${user.username}#${user.discriminator}` : user.username) : id;
 };

@@ -1,4 +1,5 @@
 import { fetch } from "../misc/util.js";
+import { getClient } from "../misc/client.js";
 import { s } from "../misc/languages.js";
 import fs from "node:fs/promises";
 
@@ -27,14 +28,7 @@ const indexAppEmojis = (collection) => {
     }
 };
 
-let emojiClient = null;
-export const setEmojiClient = (client) => {
-    emojiClient = client;
-};
-
-const getClient = (interaction = null) => {
-    return interaction?.client || emojiClient;
-};
+const clientOf = (interaction = null) => interaction?.client || getClient();
 
 export const emojiToString = (emoji) => emoji && `<:${emoji.name}:${emoji.id}>`;
 
@@ -60,7 +54,7 @@ export const rankEmoji = async (tier, iconUrl, interaction = null) => {
 const getOrCreateEmoji = async (name, filenameOrUrl, interaction = null) => {
     if (!name || !filenameOrUrl) return null;
 
-    const client = getClient(interaction);
+    const client = clientOf(interaction);
     if (!client?.application?.emojis) return null;
 
     const now = Date.now();

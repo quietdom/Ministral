@@ -40,7 +40,6 @@ import {
     renderCollectionOfWeapon,
     renderProfile,
     renderCompetitiveMatchHistory,
-    setEmbedClient,
     fetchChannel,
     getChannelGuildId,
     canSendMessages,
@@ -66,7 +65,7 @@ import {
 } from "./embed.js";
 import { authUser, getUser, getUserList, getRegion, getUserInfo, generateWebAuthUrl, redeemWebAuthUrl } from "../valorant/auth.js";
 import { getBalance, clearShopMemoryCache } from "../valorant/shop.js";
-import { getSkin, fetchData, searchSkin, searchBundle, getBundle, clearCache, loadSkinsJSON, flushSkinsJSON, areSkinDataLoaded, setCacheClient, mergePrices } from "../valorant/cache.js";
+import { getSkin, fetchData, searchSkin, searchBundle, getBundle, clearCache, loadSkinsJSON, flushSkinsJSON, areSkinDataLoaded, mergePrices } from "../valorant/cache.js";
 import {
     addAlert,
     alertExists,
@@ -75,11 +74,10 @@ import {
     fetchAlerts,
     filteredAlertsForUser,
     removeAlert,
-    testAlerts,
-    setAlertsClient
+    testAlerts
 } from "./alerts.js";
-import { RadEmoji, VPEmoji, KCEmoji, warmEmojiCache, setEmojiClient } from "./emoji.js";
-import { getOverallStats, getStatsFor, flushStats, setStatsClient } from "../misc/stats.js";
+import { RadEmoji, VPEmoji, KCEmoji, warmEmojiCache } from "./emoji.js";
+import { getOverallStats, getStatsFor, flushStats } from "../misc/stats.js";
 import {
     WeaponTypeUuid,
     WeaponType,
@@ -91,7 +89,8 @@ import {
     fetchMaintenances
 } from "../misc/util.js";
 import config, { loadConfig, saveConfig } from "../misc/config.js";
-import { localError, localLog, sendConsoleOutput, setLoggerClient, addMessagesToLog } from "../misc/logger.js";
+import { setClient } from "../misc/client.js";
+import { localError, localLog, sendConsoleOutput, addMessagesToLog } from "../misc/logger.js";
 import { DEFAULT_VALORANT_LANG, discToValLang, l, s, hideUsername } from "../misc/languages.js";
 import {
     deleteUser,
@@ -101,7 +100,7 @@ import {
     switchAccount,
     saveUser
 } from "../valorant/accountSwitcher.js";
-import { areAllShardsReady, sendShardMessage, setShardClient, onShardMessage } from "../misc/shardMessage.js";
+import { areAllShardsReady, sendShardMessage, receiveShardMessage, onShardMessage } from "../misc/shardMessage.js";
 import {
     getSetting, clearSettingsCache,
     settingIsVisible, settingName, settings
@@ -271,13 +270,8 @@ export const client = new Client({
     //shards: "auto" // uncomment this to use internal sharding instead of sharding.js
 });
 
-setLoggerClient(client);
-setShardClient(client);
-setStatsClient(client);
-setCacheClient(client);
-setEmojiClient(client);
-setAlertsClient(client);
-setEmbedClient(client);
+setClient(client);
+client.skinPeekShardMessageReceived = receiveShardMessage;
 
 onShardMessage(async (message) => {
     switch (message.type) {

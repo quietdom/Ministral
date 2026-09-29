@@ -1,18 +1,13 @@
 import config from "./config.js";
+import { getClient } from "./client.js";
 import { escapeMarkdown } from "discord.js";
 
 const messagesToLog = [];
 const oldLog = console.log;
 const oldError = console.error;
 
-let discordClient = null;
-
-export const setLoggerClient = (client) => {
-    discordClient = client;
-};
-
 const shardString = () => {
-    const shardId = discordClient?.shard?.ids?.[0];
+    const shardId = getClient()?.shard?.ids?.[0];
     return shardId !== undefined ? `[${shardId}] ` : `[Main] `;
 };
 
@@ -44,6 +39,7 @@ export const addMessagesToLog = (messages) => {
 
 export const sendConsoleOutput = async () => {
     try {
+        const discordClient = getClient();
         if (!discordClient || discordClient.destroyed || !messagesToLog.length) return;
 
         const channel = discordClient.channels.cache.get(config.logToChannel);

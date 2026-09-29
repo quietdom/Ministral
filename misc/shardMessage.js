@@ -1,28 +1,21 @@
 import { loadConfig } from "./config.js";
 import { localLog, localError } from "./logger.js";
+import { getClient } from "./client.js";
 
-let shardClient = null;
 let allShardsReadyCb;
 let allShardsReadyPromise = new Promise(r => allShardsReadyCb = r);
 
 // Channel→shard mapping cache
 const channelToShardCache = new Map();
 
-export const setShardClient = (client) => {
-    shardClient = client;
-    if (shardClient) {
-        shardClient.skinPeekShardMessageReceived = receiveShardMessage;
-    }
-};
-
 export const areAllShardsReady = () => allShardsReadyPromise === null;
 
 export const sendShardMessage = async (message) => {
     await allShardsReadyPromise;
-    if (!shardClient?.shard) return;
+    if (!getClient()?.shard) return;
 
     try {
-        await shardClient.shard.broadcastEval(async (c, context) => {
+        await getClient().shard.broadcastEval(async (c, context) => {
             if (typeof c.skinPeekShardMessageReceived === "function") {
                 try {
                     await c.skinPeekShardMessageReceived(context.message);
@@ -40,13 +33,13 @@ export const sendShardMessage = async (message) => {
  */
 export const sendShardMessageForChannel = async (message, channelId) => {
     await allShardsReadyPromise;
-    if (!shardClient?.shard) return false;
+    if (!getClient()?.shard) return false;
 
     // Try targeted delivery to the cached shard first (single pass)
     const knownShard = channelToShardCache.get(channelId);
     if (knownShard != null) {
         try {
-            const handled = await shardClient.shard.broadcastEval(async (c, context) => {
+            const handled = await getClient().shard.broadcastEval(async (c, context) => {
                 if (c.channels.cache.has(context.channelId)) {
                     if (typeof c.skinPeekShardMessageReceived === "function") {
                         try {
@@ -72,7 +65,7 @@ export const sendShardMessageForChannel = async (message, channelId) => {
 
     // Single-pass broadcast: checks channel AND delivers immediately on the winning shard
     try {
-        const results = await shardClient.shard.broadcastEval(async (c, context) => {
+        const results = await getClient().shard.broadcastEval(async (c, context) => {
             if (c.channels.cache.has(context.channelId)) {
                 if (typeof c.skinPeekShardMessageReceived === "function") {
                     try {

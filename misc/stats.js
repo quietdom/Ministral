@@ -1,4 +1,5 @@
 import config from "./config.js";
+import { getClient } from "./client.js";
 import fs from "fs";
 import { writeFileAtomic } from "./util.js";
 
@@ -15,11 +16,6 @@ let itemsUnsorted = false; // addStore bumps counts in place; getOverallStats re
 let statsDirty = false;
 let saveDebounceTimer = null;
 const SAVE_DEBOUNCE_MS = 5000;
-
-let statsClient = null;
-export const setStatsClient = (client) => {
-    statsClient = client;
-};
 
 /** "17-3-2026" → a UTC timestamp. Matches formatDate() below. */
 const parseDayKey = (key) => {
@@ -101,7 +97,7 @@ const saveStats = (filename = "data/stats.json") => {
 };
 
 const debouncedSaveStats = () => {
-    const shardId = statsClient?.shard?.ids?.[0];
+    const shardId = getClient()?.shard?.ids?.[0];
     if (shardId !== undefined && shardId !== 0) return; // shard 0 only
     statsDirty = true;
     if (saveDebounceTimer) return;
