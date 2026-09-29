@@ -13,7 +13,6 @@ import {
     VAL_COLOR_1,
     skinEmbed,
     fetchChannel,
-    getChannelGuildId,
     skinNameAndEmoji,
     removeAlertActionRow,
     removeAlertButton,
@@ -21,7 +20,7 @@ import {
 } from "./embed.js";
 import config from "../misc/config.js";
 import { l, s } from "../misc/languages.js";
-import { readUserJson, saveUser } from "../valorant/accountSwitcher.js";
+import { readUserJson, saveUser, saveUserJson } from "../valorant/accountSwitcher.js";
 import { sendShardMessageForChannel, onShardMessage } from "../misc/shardMessage.js";
 import { VPEmoji } from "./emoji.js";
 import { getSetting } from "../misc/settings.js";
@@ -123,21 +122,6 @@ export const filteredAlertsForUser = async (interaction) => {
 
     return alerts;
 };
-
-export const alertsPerChannelPerGuild = async () => {
-    const guilds = {};
-    for (const id of getUserList()) {
-        const alerts = alertsForUser(id, -1);
-        for (const alert of alerts) {
-            const guildId = await getChannelGuildId(alert.channel_id);
-
-            if (!(guildId in guilds)) guilds[guildId] = {};
-            if (!(alert.channel_id in guilds[guildId])) guilds[guildId][alert.channel_id] = 1;
-            else guilds[guildId][alert.channel_id]++;
-        }
-    }
-    return guilds;
-}
 
 export const removeAlert = (id, uuid) => {
     const user = getUser(id);
@@ -298,18 +282,12 @@ export const sendAlert = async (id, account, alerts, expires, tryOnOtherShard = 
     alerts = removeDupeAlerts(alerts);
     if (!alerts || !alerts.length) return;
 
-    let filteredAlerts = {};
     const valorantUser = getUser(id, account);
     if (!valorantUser) return;
 
-    if (tryOnOtherShard) {
-        for (const alert of alerts) {
-            if (!filteredAlerts[alert.channel_id]) filteredAlerts[alert.channel_id] = [alert];
-            else filteredAlerts[alert.channel_id].push(alert);
-        }
-    } else {
-        filteredAlerts[alerts[0].channel_id] = alerts;
-    }
+    const filteredAlerts = tryOnOtherShard
+        ? Object.groupBy(alerts, alert => alert.channel_id)
+        : { [alerts[0].channel_id]: alerts };
 
     for (const channel_id of Object.keys(filteredAlerts)) {
         const message = {
@@ -516,7 +494,6 @@ export const migrateAlertsToUserDM = async (id, channelId) => {
     }
 
     if (migratedCount > 0) {
-        const { saveUserJson } = await import("../valorant/accountSwitcher.js");
         saveUserJson(id, userJson);
         console.log(`Migrated ${migratedCount} alert(s) to DM for user ${id}`);
     }
