@@ -100,6 +100,13 @@ export const getLoadout = async (user, account = null, _retried = false) => {
         return { success: false, maintenance: true };
     }
 
+    // Any other error body (404/5xx JSON) has no Guns; caching it as a loadout would
+    // render an empty showcase until the cache expires.
+    if (!Array.isArray(json.Guns)) {
+        console.error(`[getLoadout] unexpected playerloadout response (${req.statusCode}): ${json.errorCode || Object.keys(json).join(",")}`);
+        return { success: false, networkError: true };
+    }
+
     const req2 = await fetch(`https://pd.${userRegion(user)}.a.pvp.net/favorites/v1/players/${user.puuid}/favorites`, {
         headers: {
             "Authorization": "Bearer " + user.auth.rso,
@@ -109,8 +116,7 @@ export const getLoadout = async (user, account = null, _retried = false) => {
     });
 
     const json2 = safeJson(req2.body);
-    if (!json2) return { success: false, networkError: true };
-    if (json2.httpStatus === 400 && json2.errorCode === "BAD_CLAIMS") {
+    if (json2?.httpStatus === 400 && json2?.errorCode === "BAD_CLAIMS") {
         const result = await handleBadClaims(user);
         if (result.retry && !_retried) return await getLoadout(getUser(user.id, account), account, true);
         return result;
@@ -118,17 +124,13 @@ export const getLoadout = async (user, account = null, _retried = false) => {
         return { success: false, maintenance: true };
     }
 
-    const loadoutData = {
-        loadout: json,
-        favorites: json2,
-        timestamp: Date.now()
-    };
-
-    loadoutCache[user.puuid] = loadoutData;
+    // Favorites only add the star icons: if that endpoint fails, still show the loadout (uncached).
+    const favorites = json2?.FavoritedContent ? json2 : { FavoritedContent: {} };
+    if (favorites === json2) loadoutCache[user.puuid] = { loadout: json, favorites, timestamp: Date.now() };
 
     return {
         success: true,
         loadout: json,
-        favorites: json2
+        favorites
     };
 };

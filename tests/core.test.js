@@ -1330,3 +1330,54 @@ test("collection embed: displays Account # instead of <@id> when someone else vi
     assert.ok(!singleResultSelf.embeds[0].title.includes("<@"));
     assert.ok(singleResultSelf.embeds[0].title.includes("TargetPlayer#456"));
 });
+
+test("getLoadout: rejects a Guns-less playerloadout and survives a failing favorites endpoint", async () => {
+    const { getLoadout } = await import("../valorant/inventory.js");
+    const { setRiotVersionData } = await import("../misc/util.js");
+    const { default: https } = await import("node:https");
+    const { EventEmitter } = await import("node:events");
+    const { mock } = await import("node:test");
+    setRiotVersionData({ riotClientVersion: "release-test" });
+
+    const jwt = "h." + Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 86400 })).toString("base64url") + ".s";
+    initUserDatabase("data/test_users.db");
+    const userFor = (n) => {
+        const acc = { id: `loadout-${n}`, puuid: `puuid-loadout-${n}`, username: "L#1", region: "eu", auth: { rso: jwt, ent: "ent" }, alerts: [] };
+        saveUserToDb({ id: acc.id, accounts: [acc], currentAccount: 1, settings: {} });
+        return new User(acc);
+    };
+
+    let loadoutBody, favoritesBody;
+    const request = mock.method(https, "request", (url, opts, cb) => {
+        const req = new EventEmitter();
+        req.write = () => {};
+        req.destroy = () => {};
+        req.end = () => {
+            const resp = new EventEmitter();
+            resp.statusCode = 200;
+            resp.headers = {};
+            cb(resp);
+            resp.emit("data", Buffer.from(String(url).includes("/playerloadout") ? loadoutBody : favoritesBody));
+            resp.emit("end");
+        };
+        return req;
+    });
+
+    try {
+        // an error body has no Guns: must not become a cached, empty "loadout"
+        loadoutBody = JSON.stringify({ httpStatus: 404, errorCode: "NOT_FOUND" });
+        favoritesBody = JSON.stringify({ FavoritedContent: {} });
+        const bad = await getLoadout(userFor(1));
+        assert.equal(bad.success, false);
+
+        // favorites returning garbage only costs the star icons
+        loadoutBody = JSON.stringify({ Guns: [{ ID: "g", SkinID: "s" }] });
+        favoritesBody = "<html>502</html>";
+        const ok = await getLoadout(userFor(2));
+        assert.equal(ok.success, true);
+        assert.equal(ok.loadout.Guns.length, 1);
+        assert.deepEqual(ok.favorites, { FavoritedContent: {} });
+    } finally {
+        request.mock.restore();
+    }
+});
