@@ -811,13 +811,13 @@ client.on("messageCreate", async (message) => {
                 await clearShopMemoryCache();
 
                 // delete skins.json and reset skin cache
-                await message.channel.send("Clearing shop cache (memory + Redis), deleting skins.json and resetting skin cache...");
+                await message.channel.send("Clearing shop cache, deleting skins.json and resetting skin cache...");
                 fs.rmSync("data/skins.json");
                 clearCache();
                 clearLiveGameCache();
                 await fetchData();
 
-                await message.reply("Successfully cleared shop cache (memory + Redis) and skin cache!");
+                await message.reply("Successfully cleared shop cache and skin cache!");
             } else {
                 const target = splits[1];
                 const value = splits.slice(2).join(' ');
