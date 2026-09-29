@@ -1,6 +1,7 @@
-import { authUser, handleBadClaims, getUser } from "./auth.js";
-import { fetch, isMaintenance, riotClientHeaders, safeJson, userRegion } from "../misc/util.js";
-import { getBattlepassInfo, getBuddy, getCard, getFlex, getSkin, getSpray, getValorantVersion } from "./cache.js";
+import { authUser, getUser } from "./auth.js";
+import { fetch, safeJson, userRegion } from "../misc/util.js";
+import { riotJson } from "./riot.js";
+import { getBattlepassInfo, getBuddy, getCard, getFlex, getSkin, getSpray } from "./cache.js";
 import { getItemEntitlements } from "./inventory.js";
 import { l, s } from "../misc/languages.js";
 
@@ -139,7 +140,7 @@ const getNextReward = async (interaction, currentTier) => {
     }
 };
 
-export const getBattlepassProgress = async (interaction, maxlevel = 50, targetId = interaction.user.id, _retried = false) => {
+export const getBattlepassProgress = async (interaction, maxlevel = 50, targetId = interaction.user.id) => {
     const user = getUser(targetId);
     if (!user) return { success: false };
 
@@ -149,31 +150,15 @@ export const getBattlepassProgress = async (interaction, maxlevel = 50, targetId
     const valUser = getUser(targetId);
     console.log(`Fetching battlepass progress for ${valUser.username}...`);
 
-    let req;
+    let res;
     try {
-        const clientVer = await getValorantVersion().catch(() => ({}));
-        req = await fetch(`https://pd.${userRegion(valUser)}.a.pvp.net/contracts/v1/contracts/${valUser.puuid}`, {
-            headers: {
-                "Authorization": "Bearer " + valUser.auth.rso,
-                "X-Riot-Entitlements-JWT": valUser.auth.ent,
-                "X-Riot-ClientVersion": clientVer.riotClientVersion || "",
-                ...riotClientHeaders(),
-            }
-        });
+        res = await riotJson(valUser, `https://pd.${userRegion(valUser)}.a.pvp.net/contracts/v1/contracts/${valUser.puuid}`);
     } catch (e) {
         console.error("Error fetching contracts:", e);
         return { success: false };
     }
-
-    const json = safeJson(req.body);
-    if (!json) return { success: false };
-    if (json.httpStatus === 400 && json.errorCode === "BAD_CLAIMS") {
-        const result = await handleBadClaims(valUser);
-        if (result.retry && !_retried) return await getBattlepassProgress(interaction, maxlevel, targetId, true);
-        return result;
-    } else if (isMaintenance(json)) {
-        return { success: false, maintenance: true };
-    }
+    if (!res.success) return res.networkError ? { success: false } : res;
+    const json = res.json;
 
     const battlepassInfo = await getBattlepassInfo();
     if (!battlepassInfo || !battlepassInfo.uuid) return { success: false, error: "Battlepass info unavailable" };
@@ -272,7 +257,7 @@ const getBattlepassPurchase = async (id) => {
     if (!authSuccess.success) return false;
 
     const user = getUser(id);
-    const data = await getItemEntitlements(user, "f85cb6f7-33e5-4dc8-b609-ec7212301948", "battlepass");
+    const data = await getItemEntitlements(user, "f85cb6f7-33e5-4dc8-b609-ec7212301948");
     if (!data?.success || !Array.isArray(data.entitlements?.Entitlements)) return false;
 
     const battlepassInfo = await getBattlepassInfo();
