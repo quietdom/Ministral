@@ -61,14 +61,11 @@ export const getLoadout = async (user, account = null) => {
     user = getUser(user.id, account);
 
     const base = `https://pd.${userRegion(user)}.a.pvp.net`;
-    // Any other error body (404/5xx JSON) has no Guns; caching it as a loadout would
-    // render an empty showcase until the cache expires.
-    // Riot has answered v2 with 404 RESOURCE_NOT_FOUND; fall back to v3 if it fails.
-    const loadoutRequest = (version) => riotJson(user, `${base}/personalization/${version}/players/${user.puuid}/playerloadout`, {
+    // Riot retired personalization/v2 (404 RESOURCE_NOT_FOUND on every shard). An error body
+    // has no Guns; caching it as a loadout would render an empty showcase until the cache expires.
+    const res = await riotJson(user, `${base}/personalization/v3/players/${user.puuid}/playerloadout`, {
         valid: (req, json) => Array.isArray(json?.Guns) || console.error(`[getLoadout] unexpected playerloadout response (${req.statusCode}): ${json?.errorCode || Object.keys(json || {}).join(",")}`),
     });
-    let res = await loadoutRequest("v2");
-    if (res.networkError) res = await loadoutRequest("v3");
     if (!res.success) return res;
 
     // Favorites only add the star icons: if that endpoint fails, still show the loadout (uncached).
