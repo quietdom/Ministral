@@ -1,6 +1,7 @@
 import {
     Client,
     GatewayIntentBits,
+    Partials,
     ActionRowBuilder,
     MessageFlagsBitField,
     MessageFlags,
@@ -264,8 +265,8 @@ import { spawn } from "child_process";
 import * as fs from "fs";
 
 export const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildEmojisAndStickers],
-    partials: ["CHANNEL"], // required to receive DMs
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildEmojisAndStickers, GatewayIntentBits.DirectMessages],
+    partials: [Partials.Channel], // required to receive DMs
     //shards: "auto" // uncomment this to use internal sharding instead of sharding.js
 });
 
