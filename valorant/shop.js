@@ -1,7 +1,7 @@
 import { authUser, getUser, getPuuid } from "./auth.js";
 import { fetch, isSameDay, userRegion } from "../misc/util.js";
 import { riotJson } from "./riot.js";
-import { addBundleData, getSkin, getSkinFromSkinUuid, addPricesFromShop, getBundle, getItem } from "./cache.js";
+import { addBundleData, getSkin, addPricesFromShop, getBundle, getItem } from "./cache.js";
 import { addStore } from "../misc/stats.js";
 import config from "../misc/config.js";
 import { deleteUser, saveUser } from "./accountSwitcher.js";
@@ -288,7 +288,7 @@ const easterEggOffers = async (id, account, offers) => {
         if (isApril1st && !sawEasterEgg) {
             for (const [i, uuid] of Object.entries(_offers.offers)) {
                 const skin = await getSkin(uuid);
-                const defaultSkin = await getSkinFromSkinUuid(skin.defaultSkinUuid);
+                const defaultSkin = await getSkin(skin.defaultSkinUuid);
                 _offers.offers[i] = defaultSkin.uuid;
             }
 

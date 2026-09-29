@@ -575,7 +575,6 @@ export const getSkin = async (uuid, reloadData = true) => {
     return skin;
 }
 
-export const getSkinFromSkinUuid = getSkin;
 
 export const getWeapon = async (uuid) => {
     await fetchData(["skins"]);

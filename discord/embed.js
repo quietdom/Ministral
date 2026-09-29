@@ -3,7 +3,6 @@ import {
     getBundle,
     getCard,
     getSkin,
-    getSkinFromSkinUuid,
     getSpray,
     getTitle,
     getFlex,
@@ -336,7 +335,7 @@ export const renderOffers = async (shop, interaction, valorantUser, VPemoji, oth
     }
     else headerText = s(interaction).info.SHOP_HEADER.f({ u: valorantUser.username, t: shop.expires }, interaction);
 
-    const embeds = [headerEmbed(headerText)];
+    const embeds = [secondaryEmbed(headerText)];
 
     const embedPromises = shop.offers.map(async (uuid) => {
         const skin = await getSkin(uuid);
@@ -400,7 +399,7 @@ export const renderAccessoryOffers = async (shop, interaction, valorantUser, KCe
     }
     else headerText = s(interaction).info.ACCESSORY_SHOP_HEADER.f({ u: valorantUser.username, t: shop.accessory.expires }, interaction);
 
-    const embeds = [headerEmbed(headerText)];
+    const embeds = [secondaryEmbed(headerText)];
     for (const offer of shop.accessory.offers) {
         for (const reward of offer.rewards) {
 
@@ -849,62 +848,24 @@ export const skinEmbed = async (skinOrUuid, price, interactionOrId, VPemojiStrin
     };
 }
 
-const buddyEmbed = async (uuid, price, locale, emojiString) => {
-    const buddy = await getBuddy(uuid);
-    if (!buddy) return { title: `Unknown Buddy (${uuid?.substring(0, 8) || "N/A"})`, description: priceDescription(emojiString, price), color: VAL_COLOR_2 };
+const itemEmbed = async (getItem, label, uuid, price, locale, emojiString, iconOf = item => item.icon) => {
+    const item = await getItem(uuid);
+    const description = priceDescription(emojiString, price);
+    if (!item) return { title: `Unknown ${label} (${uuid?.substring(0, 8) || "N/A"})`, description, color: VAL_COLOR_2 };
+    const icon = iconOf(item);
     return {
-        title: l(buddy.names, locale),
-        url: config.linkItemImage ? buddy.icon : null,
-        description: priceDescription(emojiString, price),
+        title: l(item.names, locale),
+        url: config.linkItemImage ? icon : null,
+        description,
         color: VAL_COLOR_2,
-        thumbnail: {
-            url: buddy.icon
-        }
-    }
-}
+        thumbnail: { url: icon }
+    };
+};
 
-const cardEmbed = async (uuid, price, locale, emojiString) => {
-    const card = await getCard(uuid);
-    if (!card) return { title: `Unknown Card (${uuid?.substring(0, 8) || "N/A"})`, description: priceDescription(emojiString, price), color: VAL_COLOR_2 };
-    return {
-        title: l(card.names, locale),
-        url: config.linkItemImage ? card.icons?.large : null,
-        description: priceDescription(emojiString, price),
-        color: VAL_COLOR_2,
-        thumbnail: {
-            url: card.icons?.large
-        }
-    }
-}
-
-const flexEmbed = async (uuid, price, locale, emojiString) => {
-    const flex = await getFlex(uuid);
-    if (!flex) return { title: `Unknown Flex (${uuid?.substring(0, 8) || "N/A"})`, description: priceDescription(emojiString, price), color: VAL_COLOR_2 };
-    return {
-        title: l(flex.names, locale),
-        url: config.linkItemImage ? flex.icon : null,
-        description: priceDescription(emojiString, price),
-        color: VAL_COLOR_2,
-        thumbnail: {
-            url: flex.icon
-        }
-    }
-}
-
-
-const sprayEmbed = async (uuid, price, locale, emojiString) => {
-    const spray = await getSpray(uuid);
-    if (!spray) return { title: `Unknown Spray (${uuid?.substring(0, 8) || "N/A"})`, description: priceDescription(emojiString, price), color: VAL_COLOR_2 };
-    return {
-        title: l(spray.names, locale),
-        url: config.linkItemImage ? spray.icon : null,
-        description: priceDescription(emojiString, price),
-        color: VAL_COLOR_2,
-        thumbnail: {
-            url: spray.icon
-        }
-    }
-}
+const buddyEmbed = (uuid, price, locale, emojiString) => itemEmbed(getBuddy, "Buddy", uuid, price, locale, emojiString);
+const cardEmbed = (uuid, price, locale, emojiString) => itemEmbed(getCard, "Card", uuid, price, locale, emojiString, card => card.icons?.large);
+const flexEmbed = (uuid, price, locale, emojiString) => itemEmbed(getFlex, "Flex", uuid, price, locale, emojiString);
+const sprayEmbed = (uuid, price, locale, emojiString) => itemEmbed(getSpray, "Spray", uuid, price, locale, emojiString);
 
 const titleEmbed = async (uuid, price, locale, emojiString) => {
     const title = await getTitle(uuid);
@@ -1017,7 +978,7 @@ export const skinCollectionSingleEmbed = async (interaction, id, user, { loadout
 
         if (!skinUuid) return null;
 
-        const skin = await getSkinFromSkinUuid(skinUuid);
+        const skin = await getSkin(skinUuid);
         if (!skin) return null;
 
         // Hide standard skins
@@ -1204,7 +1165,7 @@ export const collectionStatsEmbed = async (interaction, id, user) => {
         if (loadout?.Guns) {
             const equippedGun = loadout.Guns.find(g => g.ID === wUuid);
             if (equippedGun?.SkinID) {
-                const equippedSkin = await getSkinFromSkinUuid(equippedGun.SkinID);
+                const equippedSkin = await getSkin(equippedGun.SkinID);
                 if (equippedSkin) equippedName = ` *(Equipped: ${l(equippedSkin.names, interaction)})*`;
             }
         }
@@ -1276,7 +1237,7 @@ export const skinCollectionPageEmbed = async (interaction, id, user, { loadout, 
             description: 'Login to the game for display',
             color: VAL_COLOR_1,
         };
-        const skin = await getSkinFromSkinUuid(skinUuid);
+        const skin = await getSkin(skinUuid);
         if (!skin) return {
             title: weapon ? l(weapon.names, interaction) : 'No information available',
             description: 'Unknown Skin',
@@ -1464,7 +1425,7 @@ export const collectionOfWeaponEmbed = async (interaction, id, user, weaponTypeU
 
         const pageSkins = filteredSkins.slice(pageIndex * embedsPerPage, (pageIndex + 1) * embedsPerPage);
         if (pageSkins.length === 0) {
-            const defaultSkin = await getSkinFromSkinUuid(weaponObj?.defaultSkinUuid);
+            const defaultSkin = await getSkin(weaponObj?.defaultSkinUuid);
             if (defaultSkin) embeds.push(await renderWeaponSkinCard(defaultSkin));
         } else {
             for (const skin of pageSkins) {
@@ -2257,13 +2218,6 @@ export const basicEmbed = (content) => {
         color: VAL_COLOR_1
     }
 }
-
-export const headerEmbed = (content) => {
-    return {
-        description: content,
-        color: 0x202225,
-    };
-};
 
 export const secondaryEmbed = (content) => {
     return {
