@@ -103,7 +103,7 @@ import {
 import { areAllShardsReady, sendShardMessage, setShardClient, onShardMessage } from "../misc/shardMessage.js";
 import {
     getSetting,
-    registerInteractionLocale, settingIsVisible, settingName, settings
+    settingIsVisible, settingName, settings
 } from "../misc/settings.js";
 import fuzzysort from "fuzzysort";
 import { getSkins, getLoadout } from "../valorant/inventory.js";
@@ -1004,7 +1004,6 @@ client.on("interactionCreate", async (interaction) => {
         return await interaction.reply({ content: maintenanceMessage, flags: [MessageFlags.Ephemeral] });
     }
 
-    registerInteractionLocale(interaction);
 
     const valorantUser = getUser(interaction.user.id);
 
