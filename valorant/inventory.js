@@ -61,23 +61,20 @@ export const getLoadout = async (user, account = null) => {
     user = getUser(user.id, account);
 
     const base = `https://pd.${userRegion(user)}.a.pvp.net`;
-    const res = await riotJson(user, `${base}/personalization/v2/players/${user.puuid}/playerloadout`);
+    // Any other error body (404/5xx JSON) has no Guns; caching it as a loadout would
+    // render an empty showcase until the cache expires.
+    const res = await riotJson(user, `${base}/personalization/v2/players/${user.puuid}/playerloadout`, {
+        valid: (req, json) => Array.isArray(json?.Guns),
+    });
     if (!res.success) return res;
 
-    const res2 = await riotJson(user, `${base}/favorites/v1/players/${user.puuid}/favorites`);
-    if (!res2.success) return res2;
+    // Favorites only add the star icons: if that endpoint fails, still show the loadout (uncached).
+    const res2 = await riotJson(user, `${base}/favorites/v1/players/${user.puuid}/favorites`, {
+        valid: (req, json) => json?.FavoritedContent,
+    });
+    if (res2.maintenance) return res2;
+    const favorites = res2.success ? res2.json : { FavoritedContent: {} };
+    if (res2.success) loadoutCache[user.puuid] = { loadout: res.json, favorites, timestamp: Date.now() };
 
-    const loadoutData = {
-        loadout: res.json,
-        favorites: res2.json,
-        timestamp: Date.now()
-    };
-
-    loadoutCache[user.puuid] = loadoutData;
-
-    return {
-        success: true,
-        loadout: res.json,
-        favorites: res2.json
-    };
+    return { success: true, loadout: res.json, favorites };
 };
