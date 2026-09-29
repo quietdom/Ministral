@@ -2,7 +2,7 @@ import {
     removeDupeAlerts,
     wait
 } from "../misc/util.js";
-import { authUser, getUser, getUserList, getAlertUserList } from "../valorant/auth.js";
+import { authUser, getUser, getAlertUserList } from "../valorant/auth.js";
 import { getOffers } from "../valorant/shop.js";
 import { getSkin } from "../valorant/cache.js";
 import {
@@ -586,166 +586,6 @@ export const fetchAlerts = async (interaction) => {
     return await alertsPageEmbed(interaction, await filteredAlertsForUser(interaction), 0, emojiString);
 }
 
-export const debugCheckAlerts = async () => {
-    const debugLog = [];
-    const log = (message, level = 'INFO') => {
-        const timestamp = new Date().toISOString();
-        const logMessage = `[${timestamp}] [${level}] ${message}`;
-        console.log(logMessage);
-        debugLog.push(logMessage);
-    };
-
-    log('=== Starting Debug Alert Check (DRY RUN - No messages will be sent) ===', 'DEBUG');
-
-    try {
-        let totalUsers = 0;
-        let usersWithAlerts = 0;
-        let usersWithDailyShop = 0;
-        let unreachableChannels = new Map(); // channelId -> {reason, count}
-        let reachableChannels = new Set();
-
-        for (const id of getUserList()) {
-            totalUsers++;
-
-            try {
-                const userJson = readUserJson(id);
-                if (!userJson) {
-                    log(`User ${id}: No JSON data found`, 'WARN');
-                    continue;
-                }
-
-                const discordUser = await getClient()?.users.fetch(id).catch(() => null);
-                const discordUsername = discordUser ? `${discordUser.username} (${id})` : id;
-
-                const accountCount = userJson.accounts.length;
-                log(`\n--- User: ${discordUsername} (${accountCount} account${accountCount !== 1 ? 's' : ''}) ---`);
-
-                for (let i = 1; i <= accountCount; i++) {
-                    const rawUserAlerts = alertsForUser(id, i);
-                    const dailyShopChannel = getSetting(id, "dailyShop");
-
-                    if (!rawUserAlerts?.length && !dailyShopChannel) {
-                        log(`  Account ${i}/${accountCount}: No alerts or daily shop configured`, 'DEBUG');
-                        continue;
-                    }
-
-                    const valorantUser = getUser(id, i);
-                    if (!valorantUser) {
-                        log(`  Account ${i}/${accountCount}: Could not load Valorant user data`, 'ERROR');
-                        continue;
-                    }
-
-                    log(`  Account ${i}/${accountCount}: ${valorantUser.username}`);
-
-                    // Check daily shop channel
-                    if (dailyShopChannel && i === userJson.currentAccount) {
-                        usersWithDailyShop++;
-                        log(`    Daily Shop: Enabled for channel ID ${dailyShopChannel}`);
-
-                        const channel = await fetchChannel(dailyShopChannel).catch(e => {
-                            log(`    Daily Shop Channel: ERROR fetching - ${e.message}`, 'ERROR');
-                            return null;
-                        });
-
-                        if (!channel) {
-                            const reason = await diagnoseChannelIssue(dailyShopChannel, id);
-                            log(`    Daily Shop Channel: ❌ UNREACHABLE - ${reason}`, 'ERROR');
-                            const key = `${dailyShopChannel}`;
-                            if (!unreachableChannels.has(key)) {
-                                unreachableChannels.set(key, { reason, count: 0, type: 'dailyShop', users: [] });
-                            }
-                            unreachableChannels.get(key).count++;
-                            unreachableChannels.get(key).users.push(discordUsername);
-                        } else {
-                            log(`    Daily Shop Channel: ✓ Accessible in guild "${channel.guild?.name || 'DM'}" #${channel.name}`, 'INFO');
-                            reachableChannels.add(dailyShopChannel);
-                        }
-                    } else if (dailyShopChannel && i !== userJson.currentAccount) {
-                        log(`    Daily Shop: Configured but skipped (not current account)`, 'DEBUG');
-                    }
-
-                    // Check alerts
-                    if (rawUserAlerts?.length) {
-                        usersWithAlerts++;
-                        const userAlerts = removeDupeAlerts(rawUserAlerts);
-                        log(`    Alerts: ${userAlerts.length} skin alert${userAlerts.length !== 1 ? 's' : ''} configured`);
-
-                        const channelGroups = {};
-                        for (const alert of userAlerts) {
-                            if (!channelGroups[alert.channel_id]) channelGroups[alert.channel_id] = [];
-                            channelGroups[alert.channel_id].push(alert);
-                        }
-
-                        for (const [channelId, alerts] of Object.entries(channelGroups)) {
-                            const channel = await fetchChannel(channelId).catch(e => {
-                                log(`      Alert Channel ${channelId}: ERROR fetching - ${e.message}`, 'ERROR');
-                                return null;
-                            });
-
-                            if (!channel) {
-                                const reason = await diagnoseChannelIssue(channelId, id);
-                                log(`      Alert Channel ${channelId}: ❌ UNREACHABLE - ${reason}`, 'ERROR');
-                                log(`        ${alerts.length} alert${alerts.length !== 1 ? 's' : ''} would fail to send`, 'ERROR');
-
-                                const key = `${channelId}`;
-                                if (!unreachableChannels.has(key)) {
-                                    unreachableChannels.set(key, { reason, count: 0, type: 'alert', users: [], skins: [] });
-                                }
-                                unreachableChannels.get(key).count += alerts.length;
-                                unreachableChannels.get(key).users.push(discordUsername);
-
-                                for (const alert of alerts) {
-                                    const skin = await getSkin(alert.uuid);
-                                    unreachableChannels.get(key).skins.push(skin ? l(skin.names) : alert.uuid);
-                                }
-                            } else {
-                                log(`      Alert Channel ${channelId}: ✓ Accessible in guild "${channel.guild?.name || 'DM'}" #${channel.name}`, 'INFO');
-                                reachableChannels.add(channelId);
-                                for (const alert of alerts) {
-                                    const skin = await getSkin(alert.uuid);
-                                    log(`        - ${skin ? l(skin.names) : "(unknown skin)"} (${alert.uuid})`, "DEBUG");
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (e) {
-                log(`User ${id}: ERROR during check - ${e.message}`, 'ERROR');
-                log(e.stack, 'ERROR');
-            }
-        }
-
-        // Summary
-        log('\n=== DEBUG SUMMARY ===', 'INFO');
-        log(`Total users checked: ${totalUsers}`);
-        log(`Users with alerts: ${usersWithAlerts}`);
-        log(`Users with daily shop: ${usersWithDailyShop}`);
-        log(`Reachable channels: ${reachableChannels.size}`);
-        log(`Unreachable channels: ${unreachableChannels.size}`);
-
-        if (unreachableChannels.size > 0) {
-            log('\n=== UNREACHABLE CHANNELS DETAIL ===', 'ERROR');
-            for (const [channelId, info] of unreachableChannels) {
-                log(`\nChannel ID: ${channelId}`, 'ERROR');
-                log(`  Issue: ${info.reason}`, 'ERROR');
-                log(`  Type: ${info.type}`, 'ERROR');
-                log(`  Affected: ${info.count} alert${info.count !== 1 ? 's' : ''}`, 'ERROR');
-                log(`  Users: ${info.users.join(', ')}`, 'ERROR');
-                if (info.skins && info.skins.length > 0) {
-                    log(`  Skins: ${info.skins.join(', ')}`, 'ERROR');
-                }
-            }
-        }
-
-        log('\n=== Debug Alert Check Complete ===', 'DEBUG');
-        return debugLog.join('\n');
-    } catch (e) {
-        log(`FATAL ERROR during debug check: ${e.message}`, 'ERROR');
-        log(e.stack, 'ERROR');
-        return debugLog.join('\n');
-    }
-}
-
 async function diagnoseChannelIssue(channelId, userId) {
     const client = getClient();
     if (!client) return 'Client not initialized';
@@ -803,9 +643,6 @@ onShardMessage(async (message) => {
             return true;
         case "checkAlerts":
             await checkAlerts();
-            return true;
-        case "debugCheckAlerts":
-            await debugCheckAlerts();
             return true;
     }
     return false;

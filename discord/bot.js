@@ -72,7 +72,6 @@ import {
     alertExists,
     canAccessChannel,
     checkAlerts,
-    debugCheckAlerts,
     fetchAlerts,
     filteredAlertsForUser,
     removeAlert,
@@ -911,32 +910,6 @@ client.on("messageCreate", async (message) => {
             else {
                 await sendShardMessage({ type: "checkAlerts" });
                 await message.reply("Told shard 0 to start checking alerts!");
-            }
-        } else if (content === "!debugalerts") {
-            if (client.shard.ids.includes(0)) {
-                await message.reply("Starting debug alert check (dry run)... Check the console for detailed output.");
-                const debugOutput = await debugCheckAlerts();
-                // Split output if too long for Discord (2000 char limit)
-                const chunks = [];
-                const lines = debugOutput.split('\n');
-                let currentChunk = '```\n';
-
-                for (const line of lines) {
-                    if (currentChunk.length + line.length + 5 > 1990) { // 5 for \n```
-                        chunks.push(currentChunk + '\n```');
-                        currentChunk = '```\n' + line + '\n';
-                    } else {
-                        currentChunk += line + '\n';
-                    }
-                }
-                if (currentChunk.length > 4) chunks.push(currentChunk + '\n```');
-
-                for (const chunk of chunks) {
-                    await message.channel.send(chunk);
-                }
-            } else {
-                await sendShardMessage({ type: "debugCheckAlerts" });
-                await message.reply("Told shard 0 to start debug checking alerts!");
             }
         } else if (content === "!stop skinpeek") {
             await stopBot(() => message.reply("Stopping the bot..."));
