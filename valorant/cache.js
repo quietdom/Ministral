@@ -67,14 +67,14 @@ const mergePriceCache = (incomingPrices, setVersion = null) => {
     if (!incomingPrices || typeof incomingPrices !== "object") {
         if (!prices || typeof prices !== "object") prices = { timestamp: null };
         if (setVersion && !prices.version) prices.version = setVersion;
-        return { changed: 0, added: 0, updated: 0 };
+        return { changed: 0, added: 0, updated: 0, uuids: [] };
     }
 
     if (!prices || typeof prices !== "object") prices = { timestamp: null };
 
-    let changed = 0;
     let added = 0;
     let updated = 0;
+    const uuids = [];
     for (const [uuid, price] of Object.entries(incomingPrices)) {
         if (PRICE_META_KEYS.has(uuid)) continue;
         if (price === null || price === undefined) continue;
@@ -83,16 +83,17 @@ const mergePriceCache = (incomingPrices, setVersion = null) => {
         if (prev === price) continue;
 
         prices[uuid] = price;
-        changed++;
+        uuids.push(uuid);
         if (prev === undefined) added++;
         else updated++;
     }
 
     if (incomingPrices.version && !prices.version) prices.version = incomingPrices.version;
     if (setVersion && !prices.version) prices.version = setVersion;
+    const changed = uuids.length;
     if (changed > 0) prices.timestamp = Date.now();
 
-    return { changed, added, updated };
+    return { changed, added, updated, uuids };
 }
 
 export const clearCache = () => {
@@ -388,105 +389,33 @@ const getPrices = async (gameVersion, id = null) => {
 export const addPricesFromShop = (shopJson) => {
     if (!config.fetchSkinPrices) return;
 
-    let changedPrices = 0;
-    let addedPrices = 0;
-    let updatedPrices = 0;
-    let newPriceData = {};
     const vpCurrencyId = "85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741";
+    const found = {};
+    const addOffer = (offer) => {
+        const cost = offer?.Cost && (offer.Cost[vpCurrencyId] || Object.values(offer.Cost)[0]);
+        if (offer?.OfferID && cost) found[offer.OfferID] = cost;
+    };
 
-    if (!prices || typeof prices !== 'object') {
-        prices = { timestamp: Date.now() };
-    }
-
-    // Daily Shop
-    if (shopJson.SkinsPanelLayout?.SingleItemStoreOffers) {
-        for (const offer of shopJson.SkinsPanelLayout.SingleItemStoreOffers) {
-            if (offer.OfferID && offer.Cost) {
-                const cost = offer.Cost[vpCurrencyId] || offer.Cost[Object.keys(offer.Cost)[0]];
-                if (cost) {
-                    const prev = prices[offer.OfferID];
-                    if (prev !== cost) {
-                        prices[offer.OfferID] = cost;
-                        newPriceData[offer.OfferID] = cost;
-                        changedPrices++;
-                        if (prev === undefined) addedPrices++;
-                        else updatedPrices++;
-                    }
-                }
-            }
+    shopJson.SkinsPanelLayout?.SingleItemStoreOffers?.forEach(addOffer);
+    for (const bundle of shopJson.FeaturedBundle?.Bundles || []) {
+        bundle.ItemOffers?.forEach(itemOffer => addOffer(itemOffer.Offer));
+        for (const item of bundle.Items || []) {
+            if (item.Item?.ItemID && item.BasePrice) found[item.Item.ItemID] = item.BasePrice;
         }
     }
+    shopJson.BonusStore?.BonusStoreOffers?.forEach(bonusOffer => addOffer(bonusOffer.Offer));
 
-    // Bundles
-    if (shopJson.FeaturedBundle?.Bundles) {
-        for (const bundle of shopJson.FeaturedBundle.Bundles) {
-            if (bundle.ItemOffers) {
-                for (const itemOffer of bundle.ItemOffers) {
-                    const offer = itemOffer.Offer;
-                    if (offer?.OfferID && offer?.Cost) {
-                        const cost = offer.Cost[vpCurrencyId] || offer.Cost[Object.keys(offer.Cost)[0]];
-                        if (cost) {
-                            const prev = prices[offer.OfferID];
-                            if (prev !== cost) {
-                                prices[offer.OfferID] = cost;
-                                newPriceData[offer.OfferID] = cost;
-                                changedPrices++;
-                                if (prev === undefined) addedPrices++;
-                                else updatedPrices++;
-                            }
-                        }
-                    }
-                }
-            }
-            if (bundle.Items) {
-                for (const item of bundle.Items) {
-                    if (item.Item?.ItemID && item.BasePrice) {
-                        const prev = prices[item.Item.ItemID];
-                        if (prev !== item.BasePrice) {
-                            prices[item.Item.ItemID] = item.BasePrice;
-                            newPriceData[item.Item.ItemID] = item.BasePrice;
-                            changedPrices++;
-                            if (prev === undefined) addedPrices++;
-                            else updatedPrices++;
-                        }
-                    }
-                }
-            }
-        }
-    }
+    const { changed, added, updated, uuids } = mergePriceCache(found);
+    if (changed === 0) return;
 
-    // Night Market
-    if (shopJson.BonusStore?.BonusStoreOffers) {
-        for (const bonusOffer of shopJson.BonusStore.BonusStoreOffers) {
-            const offer = bonusOffer.Offer;
-            if (offer?.OfferID && offer?.Cost) {
-                const cost = offer.Cost[vpCurrencyId] || offer.Cost[Object.keys(offer.Cost)[0]];
-                if (cost) {
-                    const prev = prices[offer.OfferID];
-                    if (prev !== cost) {
-                        prices[offer.OfferID] = cost;
-                        newPriceData[offer.OfferID] = cost;
-                        changedPrices++;
-                        if (prev === undefined) addedPrices++;
-                        else updatedPrices++;
-                    }
-                }
-            }
-        }
-    }
+    allSkinsCache = null;
+    console.log(`Updated ${changed} skin prices (added: ${added}, changed: ${updated}) (Total: ${Object.keys(prices).length - 2} prices)`);
 
-    if (changedPrices > 0) {
-        prices.timestamp = Date.now();
-        allSkinsCache = null; 
-        console.log(`Updated ${changedPrices} skin prices (added: ${addedPrices}, changed: ${updatedPrices}) (Total: ${Object.keys(prices).length - 2} prices)`);
-
-        if (!isShardZero()) {
-            // Only send the newly discovered prices
-            sendShardMessage({ type: "priceUpdate", prices: newPriceData });
-        } else {
-            // Just trigger the save (saveSkinsJSON() is called in debouncedSaveSkinsJSON())
-            debouncedSaveSkinsJSON();
-        }
+    if (!isShardZero()) {
+        // Only send the newly discovered prices
+        sendShardMessage({ type: "priceUpdate", prices: Object.fromEntries(uuids.map(uuid => [uuid, found[uuid]])) });
+    } else {
+        debouncedSaveSkinsJSON();
     }
 }
 
