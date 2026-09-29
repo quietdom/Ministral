@@ -333,10 +333,6 @@ client.on("warn", (warning) => {
     console.warn("[Discord Client] Warning:", warning);
 });
 
-client.on("disconnect", () => {
-    console.warn(`[Discord Client] Disconnected at ${new Date().toISOString()}`);
-});
-
 client.on("clientReady", async () => {
     console.log(`Logged in as ${client.user.tag}!`);
 
