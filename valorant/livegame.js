@@ -118,8 +118,8 @@ export const clearLiveGameCache = () => {
 const loadGamemodes = async () => {
     if (gamemodesCache) return;
     try {
-        const req = await globalThis.fetch("https://valorant-api.com/v1/gamemodes?language=all");
-        const json = await req.json();
+        const req = await fetch("https://valorant-api.com/v1/gamemodes?language=all");
+        const json = JSON.parse(req.body);
         gamemodesCache = {};
         gamemodeIconsCache = {};
         for (const mode of json.data) {
