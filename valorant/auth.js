@@ -243,10 +243,12 @@ export const refreshToken = async (id, account = null, { force = false } = {}) =
 
             const startedAt = Date.now();
             const refreshRes = await refreshWithRefreshToken(user.auth.refresh_token, userAgent);
-            // If the event loop was suspended longer than the lease, another
-            // shard may own it now. A late response must not change stored auth.
-            if (Date.now() - startedAt >= REFRESH_LOCK_TTL_MS) return currentAuthResult(user);
             if (!refreshRes.success) {
+                // If the lease may have expired, another shard may own it now;
+                // a late failure must not delete auth. A late success is still
+                // saved: the refresh token was rotated, and saveAuth is
+                // compare-and-swap so it cannot overwrite a newer login.
+                if (Date.now() - startedAt >= REFRESH_LOCK_TTL_MS) return currentAuthResult(user);
                 if (refreshRes.invalidToken) {
                     const freshUser = getUser(user);
                     if (JSON.stringify(freshUser?.auth) !== JSON.stringify(user.auth)) return currentAuthResult(user);
