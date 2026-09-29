@@ -54,7 +54,6 @@ export const loadConfig = (filename = "config.json", saveAfterLoad = true) => {
         refreshPrices: "*/30 * * * *",
         updateUserAgent: "*/15 * * * *",
         delayBetweenAlerts: 5 * 1000,
-        alertConcurrency: 1,
         alertsPerPage: 10,
         careerCacheExpiration: 10 * 60 * 1000,
         emojiCacheExpiration: 10 * 1000,

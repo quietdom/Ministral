@@ -150,11 +150,10 @@ export const removeAlert = (id, uuid) => {
 
 /**
  * Process alerts for a single user across all their Valorant accounts.
- * Extracted so it can be called from both sequential and concurrent paths.
  *
  * @param {string}  id               Discord user ID
  * @param {boolean} initialShouldWait If true, delay before the first real network fetch
- * @returns {boolean} shouldWait state after this user (pass to the next user in sequential mode)
+ * @returns {boolean} shouldWait state after this user (pass to the next user)
  */
 const processUserAlerts = async (id, initialShouldWait = false) => {
     let shouldWait = initialShouldWait;
@@ -270,41 +269,16 @@ export const checkAlerts = async () => {
             return;
         }
 
-        const concurrency = config.alertConcurrency ?? 1;
-
-        // Note: this used to be wrapped in beginBatchWrites/commitBatchWrites,
-        // described as flushing each batch "in one SQLite transaction". Those
-        // were empty functions, so no batching ever happened — and it couldn't
-        // have: every user's turn awaits Riot over the network, and holding a
-        // write transaction open across that would lock every other shard out
-        // of the database for minutes. The chunking those calls justified went
-        // with them.
-        if (concurrency > 1) {
-            // Concurrent mode — process up to `alertConcurrency` users in parallel.
-            // Set alertConcurrency > 1 in config.json to enable. Default is 1 (sequential).
-            const { default: pLimit } = await import("p-limit");
-            const limit = pLimit(concurrency);
-
-            await Promise.all(userList.map(id => limit(async () => {
-                try {
-                    // Each concurrent task starts fresh — no inter-user delay needed
-                    await processUserAlerts(id);
-                } catch (e) {
-                    console.error("There was an error while trying to fetch and send alerts for user " + discordTag(id));
-                    console.error(e);
-                }
-            })));
-        } else {
-            // Sequential mode (default): one user at a time, with
-            // config.delayBetweenAlerts between real fetches.
-            let shouldWait = false;
-            for (const id of userList) {
-                try {
-                    shouldWait = await processUserAlerts(id, shouldWait);
-                } catch (e) {
-                    console.error("There was an error while trying to fetch and send alerts for user " + discordTag(id));
-                    console.error(e);
-                }
+        // Sequential: one user at a time, with config.delayBetweenAlerts between
+        // real fetches. (No DB batching: every user's turn awaits Riot, and a
+        // write transaction held across that would lock out the other shards.)
+        let shouldWait = false;
+        for (const id of userList) {
+            try {
+                shouldWait = await processUserAlerts(id, shouldWait);
+            } catch (e) {
+                console.error("There was an error while trying to fetch and send alerts for user " + discordTag(id));
+                console.error(e);
             }
         }
 
