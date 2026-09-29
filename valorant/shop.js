@@ -1,12 +1,6 @@
-import { authUser, handleBadClaims, getUser, getPuuid } from "./auth.js";
-import {
-    fetch,
-    isMaintenance,
-    isSameDay,
-    safeJson,
-    userRegion,
-    riotClientHeaders,
-} from "../misc/util.js";
+import { authUser, getUser, getPuuid } from "./auth.js";
+import { fetch, isSameDay, userRegion } from "../misc/util.js";
+import { riotJson } from "./riot.js";
 import { addBundleData, getSkin, getSkinFromSkinUuid, addPricesFromShop, getBundle, getItem } from "./cache.js";
 import { addStore } from "../misc/stats.js";
 import config from "../misc/config.js";
@@ -14,7 +8,11 @@ import { deleteUser, saveUser } from "./accountSwitcher.js";
 
 const memoryShopCache = new Map();
 
-export const formatBundle = async (rawBundle) => {
+const VP = "85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741";
+const RADIANITE = "e59aa87c-4cbf-517a-5983-6e81511be9b7";
+const KC = "85ca954a-41f2-ce94-9b45-8ca3dd39a00d";
+
+const formatBundle = async (rawBundle) => {
     const bundle = {
         uuid: rawBundle.DataAssetID,
         expires: Math.floor(Date.now() / 1000) + rawBundle.DurationRemainingInSeconds,
@@ -50,51 +48,38 @@ export const formatNightMarket = (rawNightMarket) => {
     return {
         offers: rawNightMarket.BonusStoreOffers.map(offer => ({
             uuid: offer.Offer.OfferID,
-            realPrice: offer.Offer.Cost["85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741"],
-            nmPrice: offer.DiscountCosts["85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741"],
+            realPrice: offer.Offer.Cost[VP],
+            nmPrice: offer.DiscountCosts[VP],
             percent: offer.DiscountPercent
         })),
         expires: Math.floor(Date.now() / 1000) + rawNightMarket.BonusStoreRemainingDurationInSeconds
     };
 };
 
-export const getShop = async (id, account = null, _retried = false) => {
+const getShop = async (id, account = null) => {
     const authSuccess = await authUser(id, account);
     if (!authSuccess.success) return authSuccess;
 
     const user = getUser(id, account);
     if (config.logUrls) console.log(`Fetching shop for ${user.username}...`);
 
-    const req = await fetch(`https://pd.${userRegion(user)}.a.pvp.net/store/v3/storefront/${user.puuid}`, {
-        method: "POST",
-        headers: {
-            "Authorization": "Bearer " + user.auth.rso,
-            "X-Riot-Entitlements-JWT": user.auth.ent,
-            ...riotClientHeaders(),
-        },
-        body: JSON.stringify({})
-    });
-
     // Riot answers an outage with an HTML error page, not JSON — parsing that
     // unguarded threw out of getShop and took /shop, /alerts and the nightly
-    // alert run with it. A body we can't parse is a network error.
-    const json = safeJson(req.body);
-    if (req.statusCode !== 200 || !json) {
-        if (req.statusCode === 429 || json?.httpStatus === 429 || json?.errorCode === "RATE_LIMITED") {
+    // alert run with it. A body we can't parse is a network error, and so is a
+    // 200 without the shop payload (callers reach into json.SkinsPanelLayout).
+    const res = await riotJson(user, `https://pd.${userRegion(user)}.a.pvp.net/store/v3/storefront/${user.puuid}`, {
+        method: "POST",
+        body: JSON.stringify({}),
+        valid: (req, json) => req.statusCode === 200 && json?.SkinsPanelLayout,
+        onResponse: (req, json) => {
+            if (req.statusCode !== 429 && json?.httpStatus !== 429 && json?.errorCode !== "RATE_LIMITED") return;
             const retryAfterHeader = req.headers?.['retry-after'];
             const retryAfter = retryAfterHeader ? parseInt(retryAfterHeader, 10) * 1000 : 30000;
             return { success: false, rateLimit: Date.now() + retryAfter };
-        } else if (json?.httpStatus === 400 && json?.errorCode === "BAD_CLAIMS") {
-            const badClaimsResult = await handleBadClaims(user);
-            if (badClaimsResult.retry && !_retried) return await getShop(id, account, true);
-            return badClaimsResult;
-        } else if (isMaintenance(json)) return { success: false, maintenance: true };
-        return { success: false, networkError: true };
-    }
-
-    // A 200 without the shop payload is not a usable shop; callers reach
-    // straight into json.SkinsPanelLayout.SingleItemOffers.
-    if (!json.SkinsPanelLayout) return { success: false, networkError: true };
+        }
+    });
+    if (!res.success) return res;
+    const json = res.json;
 
     try {
         await addStore(user.puuid, json.SkinsPanelLayout.SingleItemOffers);
@@ -127,14 +112,7 @@ export const getOffers = async (id, account = null) => {
         success: true,
         offers: resp.shop.SkinsPanelLayout.SingleItemOffers,
         expires: Math.floor(Date.now() / 1000) + resp.shop.SkinsPanelLayout.SingleItemOffersRemainingDurationInSeconds,
-        accessory: {
-            offers: ((resp.shop.AccessoryStore && resp.shop.AccessoryStore.AccessoryStoreOffers) || []).map(rawAccessory => ({
-                cost: rawAccessory.Offer.Cost["85ca954a-41f2-ce94-9b45-8ca3dd39a00d"],
-                rewards: rawAccessory.Offer.Rewards,
-                contractID: rawAccessory.ContractID
-            })),
-            expires: Math.floor(Date.now() / 1000) + (resp.shop.AccessoryStore ? resp.shop.AccessoryStore.AccessoryStoreRemainingDurationInSeconds : 0)
-        }
+        accessory: formatAccessory(resp.shop, Date.now())
     });
 };
 
@@ -180,36 +158,24 @@ export const getNightMarket = async (id, account = null) => {
     return { success: true, ...formatNightMarket(resp.shop.BonusStore) };
 };
 
-export const getBalance = async (id, account = null, _retried = false) => {
+export const getBalance = async (id, account = null) => {
     const authSuccess = await authUser(id, account);
     if (!authSuccess.success) return authSuccess;
 
     const user = getUser(id, account);
     console.log(`Fetching balance for ${user.username}...`);
 
-    const req = await fetch(`https://pd.${userRegion(user)}.a.pvp.net/store/v1/wallet/${user.puuid}`, {
-        headers: {
-            "Authorization": "Bearer " + user.auth.rso,
-            "X-Riot-Entitlements-JWT": user.auth.ent,
-            ...riotClientHeaders(),
-        }
+    const res = await riotJson(user, `https://pd.${userRegion(user)}.a.pvp.net/store/v1/wallet/${user.puuid}`, {
+        valid: (req, json) => req.statusCode === 200 && json?.Balances
     });
+    if (!res.success) return res;
 
-    const json = safeJson(req.body);
-    if (req.statusCode !== 200 || !json?.Balances) {
-        if (json?.httpStatus === 400 && json?.errorCode === "BAD_CLAIMS") {
-            const result = await handleBadClaims(user);
-            if (result.retry && !_retried) return await getBalance(id, account, true);
-            return result;
-        } else if (isMaintenance(json)) return { success: false, maintenance: true };
-        return { success: false, networkError: true };
-    }
-
+    const { Balances } = res.json;
     return {
         success: true,
-        vp: json.Balances["85ad13f7-3d1b-5128-9eb2-7cd8ee0b5741"],
-        rad: json.Balances["e59aa87c-4cbf-517a-5983-6e81511be9b7"],
-        kc: json.Balances["85ca954a-41f2-ce94-9b45-8ca3dd39a00d"]
+        vp: Balances[VP],
+        rad: Balances[RADIANITE],
+        kc: Balances[KC]
     };
 };
 
@@ -231,7 +197,7 @@ export const getNextNightMarketTimestamp = async () => {
 
 export let NMTimestamp = null;
 
-export const getShopCache = async (puuid, target = "offers", print = true) => {
+const getShopCache = async (puuid, target = "offers", print = true) => {
     if (!config.useShopCache) return null;
 
     try {
@@ -266,6 +232,15 @@ export const getShopCache = async (puuid, target = "offers", print = true) => {
     return null;
 };
 
+const formatAccessory = (shopJson, now) => ({
+    offers: ((shopJson.AccessoryStore && shopJson.AccessoryStore.AccessoryStoreOffers) || []).map(rawAccessory => ({
+        cost: rawAccessory.Offer?.Cost ? rawAccessory.Offer.Cost[KC] : 0,
+        rewards: rawAccessory.Offer?.Rewards || [],
+        contractID: rawAccessory.ContractID
+    })),
+    expires: Math.floor(now / 1000) + (shopJson.AccessoryStore ? shopJson.AccessoryStore.AccessoryStoreRemainingDurationInSeconds : 0)
+});
+
 const addShopCache = async (puuid, shopJson) => {
     if (!config.useShopCache) return;
 
@@ -274,14 +249,7 @@ const addShopCache = async (puuid, shopJson) => {
         offers: {
             offers: shopJson.SkinsPanelLayout ? shopJson.SkinsPanelLayout.SingleItemOffers : [],
             expires: Math.floor(now / 1000) + (shopJson.SkinsPanelLayout ? shopJson.SkinsPanelLayout.SingleItemOffersRemainingDurationInSeconds : 0),
-            accessory: {
-                offers: ((shopJson.AccessoryStore && shopJson.AccessoryStore.AccessoryStoreOffers) || []).map(rawAccessory => ({
-                    cost: rawAccessory.Offer?.Cost ? rawAccessory.Offer.Cost["85ca954a-41f2-ce94-9b45-8ca3dd39a00d"] : 0,
-                    rewards: rawAccessory.Offer?.Rewards || [],
-                    contractID: rawAccessory.ContractID
-                })),
-                expires: Math.floor(now / 1000) + (shopJson.AccessoryStore ? shopJson.AccessoryStore.AccessoryStoreRemainingDurationInSeconds : 0)
-            }
+            accessory: formatAccessory(shopJson, now)
         },
         bundles: (shopJson.FeaturedBundle?.Bundles || []).map(rawBundle => ({
             uuid: rawBundle.DataAssetID,
@@ -303,15 +271,12 @@ export const clearShopMemoryCache = async () => {
     console.log(`Cleared shop memory cache (${memoryEntries} entries)`);
 };
 
-const getMidnightTimestamp = (timestamp) => {
+const utcTimestamp = (timestamp, hour) => {
     const date = new Date(timestamp);
-    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 23, 59, 59, 999) / 1000;
+    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), hour, 59, 59, 999) / 1000;
 };
-
-const get9PMTimetstamp = (timestamp) => {
-    const date = new Date(timestamp);
-    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 20, 59, 59, 999) / 1000;
-};
+const getMidnightTimestamp = (timestamp) => utcTimestamp(timestamp, 23);
+const get9PMTimetstamp = (timestamp) => utcTimestamp(timestamp, 20);
 
 const easterEggOffers = async (id, account, offers) => {
     try {
