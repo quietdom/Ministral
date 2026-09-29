@@ -147,7 +147,7 @@ const repairEntitlements = async (user, allowRefresh = true) => {
     return result;
 };
 
-const retryAfterMs = req => {
+export const retryAfterMs = req => {
     const value = req.headers?.["retry-after"];
     const delay = /^\d+$/.test(value) ? Number(value) * 1000 : Date.parse(value) - Date.now();
     return Number.isFinite(delay) && delay > 0 ? delay : 30000;

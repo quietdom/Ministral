@@ -85,7 +85,7 @@ export const canEditInteraction = (interaction) => Date.now() - interaction.crea
 export const discordTag = (id, interaction = null) => {
     const client = getClient(interaction);
     const user = client?.users?.cache?.get(id);
-    return user ? `${user.username}#${user.discriminator}` : id;
+    return user ? (user.discriminator && user.discriminator !== "0" ? `${user.username}#${user.discriminator}` : user.username) : id;
 };
 
 export const defer = async (interaction, ephemeral = false) => {

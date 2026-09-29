@@ -1,4 +1,4 @@
-import { authUser, getUser, getPuuid } from "./auth.js";
+import { authUser, getUser, getPuuid, retryAfterMs } from "./auth.js";
 import { fetch, isSameDay, userRegion } from "../misc/util.js";
 import { riotJson } from "./riot.js";
 import { addBundleData, getSkin, addPricesFromShop, getBundle, getItem } from "./cache.js";
@@ -73,9 +73,7 @@ const getShop = async (id, account = null) => {
         valid: (req, json) => req.statusCode === 200 && json?.SkinsPanelLayout,
         onResponse: (req, json) => {
             if (req.statusCode !== 429 && json?.httpStatus !== 429 && json?.errorCode !== "RATE_LIMITED") return;
-            const retryAfterHeader = req.headers?.['retry-after'];
-            const retryAfter = retryAfterHeader ? parseInt(retryAfterHeader, 10) * 1000 : 30000;
-            return { success: false, rateLimit: Date.now() + retryAfter };
+            return { success: false, rateLimit: Date.now() + retryAfterMs(req) };
         }
     });
     if (!res.success) return res;
