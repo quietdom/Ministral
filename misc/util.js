@@ -86,9 +86,6 @@ export const fetch = (url, options = {}) => {
                 "referer": "https://github.com/giorgi-o/SkinPeek",
                 ...options.headers
             },
-            ciphers: tlsCiphers.join(':'),
-            sigalgs: tlsSigAlgs.join(':'),
-            minVersion: "TLSv1.3",
         }, resp => {
             const res = {
                 statusCode: resp.statusCode,
@@ -293,48 +290,20 @@ export const fetchRiotVersionData = async () => {
 export const riotClientHeaders = () => {
     if (cachedRiotHeaders) return cachedRiotHeaders;
 
-    let clientVersion = "release-10.00-shipping-0-0000000";
-    if (cachedRiotVersionData && cachedRiotVersionData.riotClientVersion) {
-        clientVersion = cachedRiotVersionData.riotClientVersion;
-    } else {
-        fetchRiotVersionData();
-        return {
-            "X-Riot-ClientPlatform": clientPlatformBase64,
-            "X-Riot-ClientVersion": clientVersion,
-        };
-    }
-
-    cachedRiotHeaders = {
+    fetchRiotVersionData(); // fills the cache for next time
+    return {
         "X-Riot-ClientPlatform": clientPlatformBase64,
-        "X-Riot-ClientVersion": clientVersion,
+        "X-Riot-ClientVersion": "release-10.00-shipping-0-0000000",
     };
-    return cachedRiotHeaders;
 };
-
-const tokenCache = new Map();
-const MAX_TOKEN_CACHE_SIZE = 256;
 
 export const decodeToken = (token) => {
     if (!token || typeof token !== "string" || !token.includes('.')) return null;
-    const cached = tokenCache.get(token);
-    if (cached) {
-        tokenCache.delete(token);
-        tokenCache.set(token, cached);
-        return cached;
-    }
 
     try {
-        const parts = token.split('.');
-        if (parts.length < 2 || !parts[1]) return null;
-        const decoded = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-
-        if (tokenCache.size >= MAX_TOKEN_CACHE_SIZE) {
-            tokenCache.delete(tokenCache.keys().next().value);
-        }
-        tokenCache.set(token, decoded);
-
-        return decoded;
-    } catch (e) {
+        const payload = token.split('.')[1];
+        return payload ? JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) : null;
+    } catch {
         return null;
     }
 };
@@ -372,17 +341,16 @@ export const isDefaultSkin = (skin) => skin.skinUuid === skin.defaultSkinUuid;
 
 // Pure utility helpers
 
-export const wait = (ms) => new Promise(r => setTimeout(r, ms));
+export { setTimeout as wait } from "node:timers/promises";
 
 export const isToday = (timestamp) => isSameDay(timestamp, Date.now());
 
-export const isSameDay = (t1, t2) => {
-    const d1 = new Date(t1);
-    const d2 = new Date(t2);
-    return d1.getUTCFullYear() === d2.getUTCFullYear() &&
-        d1.getUTCMonth() === d2.getUTCMonth() &&
-        d1.getUTCDate() === d2.getUTCDate();
+const utcDay = (t) => {
+    const d = new Date(t);
+    return isNaN(d) ? NaN : d.toISOString().slice(0, 10); // NaN never matches, like an invalid date
 };
+
+export const isSameDay = (t1, t2) => utcDay(t1) === utcDay(t2);
 
 export const ordinalSuffix = (number) => {
     return number % 100 >= 11 && number % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][(number % 10 < 4) ? number % 10 : 0];
