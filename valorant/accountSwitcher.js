@@ -9,10 +9,10 @@ import {
     updateSingleAccountInDb
 } from "../misc/userDatabase.js";
 
-export const readUserJson = (id) => getUserFromDb(id);
+export { getUserFromDb as readUserJson };
 
 export const getUserJson = (id, account = null) => {
-    const user = readUserJson(id);
+    const user = getUserFromDb(id);
     if (!user) return null;
 
     account = account || user.currentAccount || 1;
@@ -121,13 +121,13 @@ export const deleteWholeUser = async (id) => {
 };
 
 export const getNumberOfAccounts = (id) => {
-    const user = readUserJson(id);
+    const user = getUserFromDb(id);
     if (!user) return 0;
     return user.accounts.length;
 };
 
 export const switchAccount = (id, accountNumber) => {
-    const userJson = readUserJson(id);
+    const userJson = getUserFromDb(id);
     if (!userJson) return null;
 
     // Validate here rather than at each call site. Both callers can hand this
@@ -144,13 +144,13 @@ export const switchAccount = (id, accountNumber) => {
 };
 
 export const getAccountWithPuuid = (id, puuid) => {
-    const userJson = readUserJson(id);
+    const userJson = getUserFromDb(id);
     if (!userJson) return null;
     return userJson.accounts.find(a => a.puuid === puuid) || null;
 };
 
 export const findTargetAccountIndex = (id, query) => {
-    const userJson = readUserJson(id);
+    const userJson = getUserFromDb(id);
     if (!userJson) return null;
 
     let index = userJson.accounts.findIndex(a => a.username === query || a.puuid === query);

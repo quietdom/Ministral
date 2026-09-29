@@ -10,8 +10,10 @@ import {
     fetchRiotVersionData
 } from "../misc/util.js";
 import config from "../misc/config.js";
-import { addUser, getAccountWithPuuid, getUserJson, readUserJson } from "./accountSwitcher.js";
-import { getAllUserIds, getUserIdsWithAlertsOrDailyShop, acquireRefreshLock, releaseRefreshLock, updateAccountAuthInDb } from "../misc/userDatabase.js";
+import { addUser, getAccountWithPuuid, getUserJson } from "./accountSwitcher.js";
+import { getUserFromDb, acquireRefreshLock, releaseRefreshLock, updateAccountAuthInDb } from "../misc/userDatabase.js";
+
+export { getAllUserIds as getUserList, getUserIdsWithAlertsOrDailyShop as getAlertUserList } from "../misc/userDatabase.js";
 
 const AUTH_REQUEST_TIMEOUT_MS = 10000;
 const refreshBufferMs = () => (config.tokenRefreshBufferMinutes ?? 5) * 60000;
@@ -45,7 +47,7 @@ export const getUser = (id, account = null) => {
 
     if (id instanceof User) {
         const user = id;
-        const userJson = readUserJson(user.id);
+        const userJson = getUserFromDb(user.id);
         if (!userJson) return null;
 
         const userData = userJson.accounts.find(a => a.puuid === user.puuid);
@@ -59,18 +61,6 @@ export const getUser = (id, account = null) => {
 export const getPuuid = (id, account = null) => {
     const user = getUser(id, account);
     return user ? user.puuid : null;
-};
-
-export const getUserList = () => {
-    const userIds = getAllUserIds();
-    if (config.logUrls) console.log(`[getUserList] Retrieved ${userIds.length} users from database`);
-    return userIds;
-};
-
-export const getAlertUserList = () => {
-    const userIds = getUserIdsWithAlertsOrDailyShop();
-    if (config.logUrls) console.log(`[getAlertUserList] Retrieved ${userIds.length} active alert users from database`);
-    return userIds;
 };
 
 export const authUser = async (id, account = null) => {
@@ -144,7 +134,7 @@ const requestEntitlements = async (user) => {
     }
 };
 
-export const fetchEntitlementsToken = async user => (await requestEntitlements(user)).token ?? null;
+const fetchEntitlementsToken = async user => (await requestEntitlements(user)).token ?? null;
 
 const repairEntitlements = async (user, allowRefresh = true) => {
     const result = await requestEntitlements(user);
@@ -321,7 +311,7 @@ export const getUserAgent = async () => {
 };
 
 export const generateWebAuthUrl = () => {
-    const nonce = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+    const nonce = randomUUID();
 
     const params = new URLSearchParams({
         client_id: "riot-client",
