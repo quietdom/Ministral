@@ -1,29 +1,11 @@
-import { fetch, isMaintenance, safeJson, userRegion, riotClientHeaders } from "../misc/util.js";
-import { authUser, deleteUserAuth, getUser } from "./auth.js";
+import { itemTypes, userRegion } from "../misc/util.js";
+import { authUser, getUser } from "./auth.js";
+import { riotJson } from "./riot.js";
 import config from "../misc/config.js";
 
-export const getItemEntitlements = async (user, itemTypeId, itemType = "item") => {
-    const req = await fetch(`https://pd.${userRegion(user)}.a.pvp.net/store/v1/entitlements/${user.puuid}/${itemTypeId}`, {
-        headers: {
-            "Authorization": "Bearer " + user.auth.rso,
-            "X-Riot-Entitlements-JWT": user.auth.ent,
-            ...riotClientHeaders(),
-        }
-    });
-
-    const json = safeJson(req.body);
-    if (!json) return { success: false, networkError: true };
-    if (json.httpStatus === 400 && json.errorCode === "BAD_CLAIMS") {
-        deleteUserAuth(user);
-        return { success: false, authFailure: true };
-    } else if (isMaintenance(json)) {
-        return { success: false, maintenance: true };
-    }
-
-    return {
-        success: true,
-        entitlements: json
-    };
+export const getItemEntitlements = async (user, itemTypeId) => {
+    const res = await riotJson(user, `https://pd.${userRegion(user)}.a.pvp.net/store/v1/entitlements/${user.puuid}/${itemTypeId}`);
+    return res.success ? { success: true, entitlements: res.json } : res;
 };
 
 const skinCache = {};
@@ -42,7 +24,7 @@ export const getSkins = async (user, account = null) => {
     const authResult = await authUser(user.id, account);
     if (!authResult.success) return authResult;
 
-    const data = await getItemEntitlements(user, "e7c63390-eda7-46e0-bb7a-a6abdacd2433", "skins");
+    const data = await getItemEntitlements(user, itemTypes.SKIN);
     if (!data.success) return data;
 
     const skins = data.entitlements.Entitlements.map(ent => ent.ItemID);
@@ -83,50 +65,21 @@ export const getLoadout = async (user, account = null) => {
 
     user = getUser(user.id, account);
 
-    const req = await fetch(`https://pd.${userRegion(user)}.a.pvp.net/personalization/v2/players/${user.puuid}/playerloadout`, {
-        headers: {
-            "Authorization": "Bearer " + user.auth.rso,
-            "X-Riot-Entitlements-JWT": user.auth.ent,
-            ...riotClientHeaders(),
-        }
+    const base = `https://pd.${userRegion(user)}.a.pvp.net`;
+    // Riot retired personalization/v2 (404 RESOURCE_NOT_FOUND on every shard). An error body
+    // has no Guns; caching it as a loadout would render an empty showcase until the cache expires.
+    const res = await riotJson(user, `${base}/personalization/v3/players/${user.puuid}/playerloadout`, {
+        valid: (req, json) => Array.isArray(json?.Guns) || console.error(`[getLoadout] unexpected playerloadout response (${req.statusCode}): ${json?.errorCode || Object.keys(json || {}).join(",")}`),
     });
+    if (!res.success) return res;
 
-    const json = safeJson(req.body);
-    if (!json) return { success: false, networkError: true };
-    if (json.httpStatus === 400 && json.errorCode === "BAD_CLAIMS") {
-        deleteUserAuth(user);
-        return { success: false, authFailure: true };
-    } else if (isMaintenance(json)) {
-        return { success: false, maintenance: true };
-    }
-
-    const req2 = await fetch(`https://pd.${userRegion(user)}.a.pvp.net/favorites/v1/players/${user.puuid}/favorites`, {
-        headers: {
-            "Authorization": "Bearer " + user.auth.rso,
-            "X-Riot-Entitlements-JWT": user.auth.ent,
-            ...riotClientHeaders(),
-        }
+    // Favorites only add the star icons: if that endpoint fails, still show the loadout (uncached).
+    const res2 = await riotJson(user, `${base}/favorites/v1/players/${user.puuid}/favorites`, {
+        valid: (req, json) => json?.FavoritedContent,
     });
+    if (res2.maintenance) return res2;
+    const favorites = res2.success ? res2.json : { FavoritedContent: {} };
+    if (res2.success) loadoutCache[user.puuid] = { loadout: res.json, favorites, timestamp: Date.now() };
 
-    const json2 = JSON.parse(req2.body);
-    if (json2.httpStatus === 400 && json2.errorCode === "BAD_CLAIMS") {
-        deleteUserAuth(user);
-        return { success: false, authFailure: true };
-    } else if (isMaintenance(json2)) {
-        return { success: false, maintenance: true };
-    }
-
-    const loadoutData = {
-        loadout: json,
-        favorites: json2,
-        timestamp: Date.now()
-    };
-
-    loadoutCache[user.puuid] = loadoutData;
-
-    return {
-        success: true,
-        loadout: json,
-        favorites: json2
-    };
+    return { success: true, loadout: res.json, favorites };
 };

@@ -111,34 +111,27 @@ export const discLanguageNames = {
 export const DEFAULT_LANG = 'en-GB';
 export const DEFAULT_VALORANT_LANG = 'en-US';
 
-const buildCategoryProxy = (categoryStrings = {}, fallbackCategory = null) => {
-    const target = (categoryStrings && typeof categoryStrings === "object") ? categoryStrings : {};
-    return new Proxy(target, {
-        get(targetObj, prop) {
-            if (prop in targetObj) return targetObj[prop];
-            if (fallbackCategory && prop in fallbackCategory) return fallbackCategory[prop];
-            return undefined;
-        }
-    });
-};
+const buildCategory = (categoryStrings, fallbackCategory) =>
+    ({ ...fallbackCategory, ...(typeof categoryStrings === "object" ? categoryStrings : null) });
 
 const languages = {};
 export const loadLanguages = () => {
-    for (const language in discLanguageNames) {
+    // default first, so every other language can fall back to its strings
+    for (const language of [DEFAULT_LANG, ...Object.keys(discLanguageNames).filter(l => l !== DEFAULT_LANG)]) {
         try {
             const languageStrings = JSON.parse(fs.readFileSync(`languages/${language}.json`, 'utf-8'));
             const languageHandler = {};
 
             for (const category in languageStrings) {
                 const fallbackCategory = language === DEFAULT_LANG ? null : languages[DEFAULT_LANG]?.[category];
-                languageHandler[category] = buildCategoryProxy(languageStrings[category], fallbackCategory);
+                languageHandler[category] = buildCategory(languageStrings[category], fallbackCategory);
             }
 
             languages[language] = new Proxy(languageHandler, {
                 get(target, prop) {
                     if (prop in target) return target[prop];
                     const fallbackCategory = language === DEFAULT_LANG ? null : languages[DEFAULT_LANG]?.[prop];
-                    return buildCategoryProxy({}, fallbackCategory);
+                    return buildCategory(null, fallbackCategory);
                 }
             });
         } catch (e) {

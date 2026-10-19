@@ -3,7 +3,6 @@ import {
     getBundle,
     getCard,
     getSkin,
-    getSkinFromSkinUuid,
     getSpray,
     getTitle,
     getFlex,
@@ -19,6 +18,7 @@ import {
     WEAPON_CATEGORIES
 } from "../misc/util.js";
 import config from "../misc/config.js";
+import { getClient } from "../misc/client.js";
 import { DEFAULT_LANG, DEFAULT_VALORANT_LANG, discToValLang, l, s, hideUsername } from "../misc/languages.js";
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, escapeMarkdown, EmbedBuilder, MessageFlags, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, PermissionsBitField } from "discord.js";
 import { getStatsFor } from "../misc/stats.js";
@@ -32,18 +32,14 @@ import { getBattlepassProgress } from "../valorant/battlepass.js";
 import { getLoadout, getSkins } from "../valorant/inventory.js";
 import { TIER_NAMES, getAccountXP } from "../valorant/profile.js";
 
-let embedClient = null;
-export const setEmbedClient = (client) => {
-    embedClient = client;
-};
-const getClient = (interaction = null) => interaction?.client || embedClient;
+const clientOf = (interaction = null) => interaction?.client || getClient();
 
 const channelGuildCache = new Map();
 const CHANNEL_GUILD_CACHE_TTL_MS = 10 * 60 * 1000;
 
 export const fetchChannel = async (channelId, interaction = null) => {
     try {
-        const client = getClient(interaction);
+        const client = clientOf(interaction);
         if (!client) return null;
         return await client.channels.fetch(channelId);
     } catch {
@@ -55,7 +51,7 @@ export const getChannelGuildId = async (channelId, interaction = null) => {
     const cached = channelGuildCache.get(channelId);
     if (cached && Date.now() - cached.at < CHANNEL_GUILD_CACHE_TTL_MS) return cached.guildId;
 
-    const client = getClient(interaction);
+    const client = clientOf(interaction);
     if (!client?.shard) return null;
 
     let guildId;
@@ -72,7 +68,7 @@ export const getChannelGuildId = async (channelId, interaction = null) => {
 
 export const canSendMessages = (channel, interaction = null) => {
     if (!channel || !channel.guild) return true;
-    const client = getClient(interaction);
+    const client = clientOf(interaction);
     const me = channel.guild.members.me || (client?.user ? channel.guild.members.cache.get(client.user.id) : null);
     if (!me) return true;
     const permissions = channel.permissionsFor(me);
@@ -84,9 +80,9 @@ export const canSendMessages = (channel, interaction = null) => {
 export const canEditInteraction = (interaction) => Date.now() - interaction.createdTimestamp < 14.8 * 60 * 1000;
 
 export const discordTag = (id, interaction = null) => {
-    const client = getClient(interaction);
+    const client = clientOf(interaction);
     const user = client?.users?.cache?.get(id);
-    return user ? `${user.username}#${user.discriminator}` : id;
+    return user ? (user.discriminator && user.discriminator !== "0" ? `${user.username}#${user.discriminator}` : user.username) : id;
 };
 
 export const defer = async (interaction, ephemeral = false) => {
@@ -282,11 +278,13 @@ export const authFailureMessage = (interactionOrId, authResponse, message = "AUT
     else {
         embed = basicEmbed(message);
 
-        // two-strike system
-        const user = getUser(id);
-        if (user) {
-            user.authFailures++;
-            saveUser(user);
+        // two-strike system — only count genuine auth failures, not transient network errors
+        if (authResponse.authFailure) {
+            const user = getUser(id);
+            if (user) {
+                user.authFailures++;
+                saveUser(user);
+            }
         }
     }
 
@@ -334,7 +332,7 @@ export const renderOffers = async (shop, interaction, valorantUser, VPemoji, oth
     }
     else headerText = s(interaction).info.SHOP_HEADER.f({ u: valorantUser.username, t: shop.expires }, interaction);
 
-    const embeds = [headerEmbed(headerText)];
+    const embeds = [secondaryEmbed(headerText)];
 
     const embedPromises = shop.offers.map(async (uuid) => {
         const skin = await getSkin(uuid);
@@ -398,7 +396,7 @@ export const renderAccessoryOffers = async (shop, interaction, valorantUser, KCe
     }
     else headerText = s(interaction).info.ACCESSORY_SHOP_HEADER.f({ u: valorantUser.username, t: shop.accessory.expires }, interaction);
 
-    const embeds = [headerEmbed(headerText)];
+    const embeds = [secondaryEmbed(headerText)];
     for (const offer of shop.accessory.offers) {
         for (const reward of offer.rewards) {
 
@@ -847,62 +845,24 @@ export const skinEmbed = async (skinOrUuid, price, interactionOrId, VPemojiStrin
     };
 }
 
-const buddyEmbed = async (uuid, price, locale, emojiString) => {
-    const buddy = await getBuddy(uuid);
-    if (!buddy) return { title: `Unknown Buddy (${uuid?.substring(0, 8) || "N/A"})`, description: priceDescription(emojiString, price), color: VAL_COLOR_2 };
+const itemEmbed = async (getItem, label, uuid, price, locale, emojiString, iconOf = item => item.icon) => {
+    const item = await getItem(uuid);
+    const description = priceDescription(emojiString, price);
+    if (!item) return { title: `Unknown ${label} (${uuid?.substring(0, 8) || "N/A"})`, description, color: VAL_COLOR_2 };
+    const icon = iconOf(item);
     return {
-        title: l(buddy.names, locale),
-        url: config.linkItemImage ? buddy.icon : null,
-        description: priceDescription(emojiString, price),
+        title: l(item.names, locale),
+        url: config.linkItemImage ? icon : null,
+        description,
         color: VAL_COLOR_2,
-        thumbnail: {
-            url: buddy.icon
-        }
-    }
-}
+        thumbnail: { url: icon }
+    };
+};
 
-const cardEmbed = async (uuid, price, locale, emojiString) => {
-    const card = await getCard(uuid);
-    if (!card) return { title: `Unknown Card (${uuid?.substring(0, 8) || "N/A"})`, description: priceDescription(emojiString, price), color: VAL_COLOR_2 };
-    return {
-        title: l(card.names, locale),
-        url: config.linkItemImage ? card.icons?.large : null,
-        description: priceDescription(emojiString, price),
-        color: VAL_COLOR_2,
-        thumbnail: {
-            url: card.icons?.large
-        }
-    }
-}
-
-const flexEmbed = async (uuid, price, locale, emojiString) => {
-    const flex = await getFlex(uuid);
-    if (!flex) return { title: `Unknown Flex (${uuid?.substring(0, 8) || "N/A"})`, description: priceDescription(emojiString, price), color: VAL_COLOR_2 };
-    return {
-        title: l(flex.names, locale),
-        url: config.linkItemImage ? flex.icon : null,
-        description: priceDescription(emojiString, price),
-        color: VAL_COLOR_2,
-        thumbnail: {
-            url: flex.icon
-        }
-    }
-}
-
-
-const sprayEmbed = async (uuid, price, locale, emojiString) => {
-    const spray = await getSpray(uuid);
-    if (!spray) return { title: `Unknown Spray (${uuid?.substring(0, 8) || "N/A"})`, description: priceDescription(emojiString, price), color: VAL_COLOR_2 };
-    return {
-        title: l(spray.names, locale),
-        url: config.linkItemImage ? spray.icon : null,
-        description: priceDescription(emojiString, price),
-        color: VAL_COLOR_2,
-        thumbnail: {
-            url: spray.icon
-        }
-    }
-}
+const buddyEmbed = (uuid, price, locale, emojiString) => itemEmbed(getBuddy, "Buddy", uuid, price, locale, emojiString);
+const cardEmbed = (uuid, price, locale, emojiString) => itemEmbed(getCard, "Card", uuid, price, locale, emojiString, card => card.icons?.large);
+const flexEmbed = (uuid, price, locale, emojiString) => itemEmbed(getFlex, "Flex", uuid, price, locale, emojiString);
+const sprayEmbed = (uuid, price, locale, emojiString) => itemEmbed(getSpray, "Spray", uuid, price, locale, emojiString);
 
 const titleEmbed = async (uuid, price, locale, emojiString) => {
     const title = await getTitle(uuid);
@@ -1016,6 +976,15 @@ const getRunninOnEmptySprayIcon = async () => {
     }
 };
 
+const getCollectionUsernameText = (interaction, id, user, someoneElseUsedCommand) => {
+    if (someoneElseUsedCommand) {
+        const json = readUserJson(id);
+        const currentAccount = json?.currentAccount || 1;
+        return s(interaction).info.SWITCH_ACCOUNT_BUTTON.f({ n: currentAccount });
+    }
+    return hideUsername({ u: user?.username || "" }, id).u;
+};
+
 export const skinCollectionSingleEmbed = async (interaction, id, user, { loadout, favorites }) => {
     const someoneElseUsedCommand = interaction.message ?
         interaction.message.interaction && interaction.message.interaction.user.id !== user.id :
@@ -1031,7 +1000,7 @@ export const skinCollectionSingleEmbed = async (interaction, id, user, { loadout
 
         if (!skinUuid) return null;
 
-        const skin = await getSkinFromSkinUuid(skinUuid);
+        const skin = await getSkin(skinUuid);
         if (!skin) return null;
 
         // Hide standard skins
@@ -1100,15 +1069,9 @@ export const skinCollectionSingleEmbed = async (interaction, id, user, { loadout
     const emoji = await VPEmoji(interaction);
     const summaryLine = `💰 **${s(interaction).info.COLLECTION_EQUIPPED_VALUE || "Equipped Value"}:** ${emoji} **${totalValue.toLocaleString()}**`;
 
-    let usernameText;
-    if (someoneElseUsedCommand) {
-        usernameText = `<@${id}>`;
-        const json = readUserJson(id);
-        if (json.accounts.length > 1) usernameText += ' ' + s(interaction).info.SWITCH_ACCOUNT_BUTTON.f({ n: json.currentAccount });
-    } else {
-        usernameText = user.username;
-    }
+    const usernameText = getCollectionUsernameText(interaction, id, user, someoneElseUsedCommand);
 
+    if (categoryFields.length === 0) console.warn(`[collection] empty showcase for ${id}: Guns=${loadout?.Guns?.length ?? "none"}, unresolved SkinIDs=${(loadout?.Guns || []).map(g => g?.SkinID).filter(Boolean).join(",")}`);
     const emptySprayIcon = categoryFields.length === 0 ? await getRunninOnEmptySprayIcon() : null;
     const embed = {
         title: s(interaction).info.COLLECTION_HEADER.f({ u: usernameText }, id),
@@ -1225,7 +1188,7 @@ export const collectionStatsEmbed = async (interaction, id, user) => {
         if (loadout?.Guns) {
             const equippedGun = loadout.Guns.find(g => g.ID === wUuid);
             if (equippedGun?.SkinID) {
-                const equippedSkin = await getSkinFromSkinUuid(equippedGun.SkinID);
+                const equippedSkin = await getSkin(equippedGun.SkinID);
                 if (equippedSkin) equippedName = ` *(Equipped: ${l(equippedSkin.names, interaction)})*`;
             }
         }
@@ -1241,14 +1204,7 @@ export const collectionStatsEmbed = async (interaction, id, user) => {
         `🟢 **Battlepass / Standard:** ${tierCounts.other} (${Math.round(tierCounts.other / totalCount * 100)}%)`
     ];
 
-    let usernameText;
-    if (someoneElseUsedCommand) {
-        usernameText = `<@${id}>`;
-        const json = readUserJson(id);
-        if (json.accounts.length > 1) usernameText += ' ' + s(interaction).info.SWITCH_ACCOUNT_BUTTON.f({ n: json.currentAccount });
-    } else {
-        usernameText = user.username;
-    }
+    const usernameText = getCollectionUsernameText(interaction, id, user, someoneElseUsedCommand);
 
     const descriptionText = totalCollectionValue === 0
         ? `💰 **${s(interaction).info.COLLECTION_TOTAL_VALUE || "Total Collection Value"}:** ${emoji} **0**\n🎒 **${s(interaction).info.COLLECTION_TOTAL_SKINS || "Total Skins Owned"}:** **${validSkins.length}** skins *(Standard/Battlepass only)*`
@@ -1304,7 +1260,7 @@ export const skinCollectionPageEmbed = async (interaction, id, user, { loadout, 
             description: 'Login to the game for display',
             color: VAL_COLOR_1,
         };
-        const skin = await getSkinFromSkinUuid(skinUuid);
+        const skin = await getSkin(skinUuid);
         if (!skin) return {
             title: weapon ? l(weapon.names, interaction) : 'No information available',
             description: 'Unknown Skin',
@@ -1334,14 +1290,7 @@ export const skinCollectionPageEmbed = async (interaction, id, user, { loadout, 
     if (pageIndex < 0) pageIndex = pages.length - 1;
     if (pageIndex >= pages.length) pageIndex = 0;
 
-    let usernameText;
-    if (someoneElseUsedCommand) {
-        usernameText = `<@${id}>`;
-        const json = readUserJson(id);
-        if (json.accounts.length > 1) usernameText += ' ' + s(interaction).info.SWITCH_ACCOUNT_BUTTON.f({ n: json.currentAccount });
-    } else {
-        usernameText = user.username;
-    }
+    const usernameText = getCollectionUsernameText(interaction, id, user, someoneElseUsedCommand);
 
     const embeds = [basicEmbed(s(interaction).info.COLLECTION_HEADER.f({ u: usernameText }, id))];
     const pageEmbedPromises = pages[pageIndex].map(weapon => createEmbed(weapon));
@@ -1376,14 +1325,7 @@ export const collectionOfWeaponEmbed = async (interaction, id, user, weaponTypeU
 
     const emoji = await VPEmoji(interaction);
 
-    let usernameText;
-    if (someoneElseUsedCommand) {
-        usernameText = `<@${id}>`;
-        const json = readUserJson(id);
-        if (json.accounts.length > 1) usernameText += ' ' + s(interaction).info.SWITCH_ACCOUNT_BUTTON.f({ n: json.currentAccount });
-    } else {
-        usernameText = user.username;
-    }
+    const usernameText = getCollectionUsernameText(interaction, id, user, someoneElseUsedCommand);
 
     const skinsData = await Promise.all(skins.map(skinUuid => getSkin(skinUuid, false)));
     const seenSkinUuids = new Set();
@@ -1506,7 +1448,7 @@ export const collectionOfWeaponEmbed = async (interaction, id, user, weaponTypeU
 
         const pageSkins = filteredSkins.slice(pageIndex * embedsPerPage, (pageIndex + 1) * embedsPerPage);
         if (pageSkins.length === 0) {
-            const defaultSkin = await getSkinFromSkinUuid(weaponObj?.defaultSkinUuid);
+            const defaultSkin = await getSkin(weaponObj?.defaultSkinUuid);
             if (defaultSkin) embeds.push(await renderWeaponSkinCard(defaultSkin));
         } else {
             for (const skin of pageSkins) {
@@ -2304,13 +2246,6 @@ export const basicEmbed = (content) => {
         color: VAL_COLOR_1
     }
 }
-
-export const headerEmbed = (content) => {
-    return {
-        description: content,
-        color: 0x202225,
-    };
-};
 
 export const secondaryEmbed = (content) => {
     return {

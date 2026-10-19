@@ -1,6 +1,7 @@
 import {
     Client,
     GatewayIntentBits,
+    Partials,
     ActionRowBuilder,
     MessageFlagsBitField,
     MessageFlags,
@@ -39,7 +40,6 @@ import {
     renderCollectionOfWeapon,
     renderProfile,
     renderCompetitiveMatchHistory,
-    setEmbedClient,
     fetchChannel,
     getChannelGuildId,
     canSendMessages,
@@ -65,32 +65,33 @@ import {
 } from "./embed.js";
 import { authUser, getUser, getUserList, getRegion, getUserInfo, generateWebAuthUrl, redeemWebAuthUrl } from "../valorant/auth.js";
 import { getBalance, clearShopMemoryCache } from "../valorant/shop.js";
-import { getSkin, getWeapon, fetchData, searchSkin, searchBundle, getBundle, clearCache, loadSkinsJSON, flushSkinsJSON, areSkinDataLoaded, setCacheClient } from "../valorant/cache.js";
+import { getSkin, getWeapon, fetchData, searchSkin, searchBundle, getBundle, clearCache, loadSkinsJSON, flushSkinsJSON, areSkinDataLoaded, mergePrices } from "../valorant/cache.js";
 import {
     addAlert,
     alertExists,
     canAccessChannel,
     checkAlerts,
-    debugCheckAlerts,
     fetchAlerts,
     filteredAlertsForUser,
     removeAlert,
-    testAlerts,
-    setAlertsClient
+    testAlerts
 } from "./alerts.js";
-import { RadEmoji, VPEmoji, KCEmoji, warmEmojiCache, setEmojiClient } from "./emoji.js";
-import { getOverallStats, getStatsFor, flushStats, setStatsClient } from "../misc/stats.js";
+import { RadEmoji, VPEmoji, KCEmoji, warmEmojiCache } from "./emoji.js";
+import { getOverallStats, getStatsFor, flushStats } from "../misc/stats.js";
 import {
     WeaponTypeUuid,
     WeaponType,
     fetch,
     safeJson,
     fetchRiotVersionData,
+    getRiotVersionData,
+    setRiotVersionData,
     fetchMaintenances
 } from "../misc/util.js";
 import config, { loadConfig, saveConfig } from "../misc/config.js";
-import { localError, localLog, sendConsoleOutput, setLoggerClient } from "../misc/logger.js";
-import { DEFAULT_VALORANT_LANG, discToValLang, l, s } from "../misc/languages.js";
+import { setClient } from "../misc/client.js";
+import { localError, localLog, sendConsoleOutput, addMessagesToLog } from "../misc/logger.js";
+import { DEFAULT_VALORANT_LANG, discToValLang, l, s, hideUsername } from "../misc/languages.js";
 import {
     deleteUser,
     deleteWholeUser, findTargetAccountIndex,
@@ -99,10 +100,10 @@ import {
     switchAccount,
     saveUser
 } from "../valorant/accountSwitcher.js";
-import { areAllShardsReady, sendShardMessage, setShardClient, onShardMessage } from "../misc/shardMessage.js";
+import { areAllShardsReady, sendShardMessage, receiveShardMessage, onShardMessage } from "../misc/shardMessage.js";
 import {
-    getSetting,
-    registerInteractionLocale, settingIsVisible, settingName, settings
+    getSetting, clearSettingsCache,
+    settingIsVisible, settingName, settings
 } from "../misc/settings.js";
 import fuzzysort from "fuzzysort";
 import { getSkins, getLoadout } from "../valorant/inventory.js";
@@ -310,18 +311,13 @@ import { spawn } from "child_process";
 import * as fs from "fs";
 
 export const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildEmojisAndStickers],
-    partials: ["CHANNEL"], // required to receive DMs
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildEmojisAndStickers, GatewayIntentBits.DirectMessages],
+    partials: [Partials.Channel], // required to receive DMs
     //shards: "auto" // uncomment this to use internal sharding instead of sharding.js
 });
 
-setLoggerClient(client);
-setShardClient(client);
-setStatsClient(client);
-setCacheClient(client);
-setEmojiClient(client);
-setAlertsClient(client);
-setEmbedClient(client);
+setClient(client);
+client.skinPeekShardMessageReceived = receiveShardMessage;
 
 onShardMessage(async (message) => {
     switch (message.type) {
@@ -338,23 +334,19 @@ onShardMessage(async (message) => {
         }
         case "priceUpdate":
             if (client?.shard?.ids?.[0] === 0) {
-                const { mergePrices } = await import("../valorant/cache.js");
                 mergePrices(message.prices);
             }
             return true;
         case "settingsInvalidate": {
-            const { clearSettingsCache } = await import("../misc/settings.js");
             clearSettingsCache(message.userId);
             return true;
         }
         case "riotVersionData": {
-            const { setRiotVersionData } = await import("../misc/util.js");
             setRiotVersionData(message.data);
             localLog(`Received Riot version data from shard 0: ${message.data.riotClientVersion}`);
             return true;
         }
         case "consoleLog": {
-            const { addMessagesToLog } = await import("../misc/logger.js");
             addMessagesToLog(message.messages);
             return true;
         }
@@ -369,6 +361,11 @@ onShardMessage(async (message) => {
 
 const cronTasks = [];
 
+const refreshAndBroadcastRiotVersion = async () => {
+    await fetchRiotVersionData();
+    await sendShardMessage({ type: "riotVersionData", data: getRiotVersionData() });
+};
+
 // Add error handlers for the Discord client
 client.on("error", (error) => {
     console.error("[Discord Client] Error:", error);
@@ -378,28 +375,14 @@ client.on("warn", (warning) => {
     console.warn("[Discord Client] Warning:", warning);
 });
 
-client.on("disconnect", () => {
-    console.warn(`[Discord Client] Disconnected at ${new Date().toISOString()}`);
-});
-
 client.on("clientReady", async () => {
     console.log(`Logged in as ${client.user.tag}!`);
-
-    // The friend activity feed DMs through the client, and only shard 0 runs it.
-    const { setActivityFeedClient } = await import("../valorant/activityFeedSink.js");
-    setActivityFeedClient(client);
 
     // Fetch version data FIRST (required for API headers)
     // Only shard 0 fetches, others wait for broadcast
     if (client.shard.ids[0] === 0) {
-        await fetchRiotVersionData();
+        await refreshAndBroadcastRiotVersion();
         console.log("Fetched latest Riot user-agent!");
-
-        // Broadcast to other shards if using sharding
-        const { getRiotVersionData } = await import("../misc/util.js");
-        const { sendShardMessage } = await import("../misc/shardMessage.js");
-        const versionData = getRiotVersionData();
-        await sendShardMessage({ type: "riotVersionData", data: versionData });
     } else {
         console.log("Waiting for Riot version data from shard 0...");
         // Version data will be received via shard message
@@ -483,14 +466,7 @@ export const scheduleTasks = () => {
 
     // check for a new riot client version (new user agent) every 15mins (only on shard 0, then broadcasts to others)
     if (config.updateUserAgent && client.shard.ids[0] === 0) {
-        cronTasks.push(cron.schedule(config.updateUserAgent, async () => {
-            await fetchRiotVersionData();
-            // Broadcast to other shards if using sharding
-            const { getRiotVersionData } = await import("../misc/util.js");
-            const { sendShardMessage } = await import("../misc/shardMessage.js");
-            const versionData = getRiotVersionData();
-            await sendShardMessage({ type: "riotVersionData", data: versionData });
-        }));
+        cronTasks.push(cron.schedule(config.updateUserAgent, refreshAndBroadcastRiotVersion));
     }
 
     // opt-in friend activity feed, polled every 2 minutes (shard 0 only)
@@ -931,7 +907,6 @@ client.on("messageCreate", async (message) => {
                 const s = "Here is the config.json the bot currently has loaded:```json\n" + JSON.stringify({
                     ...config,
                     token: "[redacted]",
-                    "githubToken": config.githubToken ? "[redacted]" : config.githubToken,
                     "HDevToken": config.HDevToken ? "[redacted]" : config.HDevToken
                 }, null, 2) + "```";
                 await message.reply(s);
@@ -939,13 +914,13 @@ client.on("messageCreate", async (message) => {
                 await clearShopMemoryCache();
 
                 // delete skins.json and reset skin cache
-                await message.channel.send("Clearing shop cache (memory + Redis), deleting skins.json and resetting skin cache...");
+                await message.channel.send("Clearing shop cache, deleting skins.json and resetting skin cache...");
                 fs.rmSync("data/skins.json");
                 clearCache();
                 clearLiveGameCache();
                 await fetchData();
 
-                await message.reply("Successfully cleared shop cache (memory + Redis) and skin cache!");
+                await message.reply("Successfully cleared shop cache and skin cache!");
             } else {
                 const target = splits[1];
                 const value = splits.slice(2).join(' ');
@@ -1050,32 +1025,6 @@ client.on("messageCreate", async (message) => {
                 await sendShardMessage({ type: "checkAlerts" });
                 await message.reply("Told shard 0 to start checking alerts!");
             }
-        } else if (content === "!debugalerts") {
-            if (client.shard.ids.includes(0)) {
-                await message.reply("Starting debug alert check (dry run)... Check the console for detailed output.");
-                const debugOutput = await debugCheckAlerts();
-                // Split output if too long for Discord (2000 char limit)
-                const chunks = [];
-                const lines = debugOutput.split('\n');
-                let currentChunk = '```\n';
-
-                for (const line of lines) {
-                    if (currentChunk.length + line.length + 5 > 1990) { // 5 for \n```
-                        chunks.push(currentChunk + '\n```');
-                        currentChunk = '```\n' + line + '\n';
-                    } else {
-                        currentChunk += line + '\n';
-                    }
-                }
-                if (currentChunk.length > 4) chunks.push(currentChunk + '\n```');
-
-                for (const chunk of chunks) {
-                    await message.channel.send(chunk);
-                }
-            } else {
-                await sendShardMessage({ type: "debugCheckAlerts" });
-                await message.reply("Told shard 0 to start debug checking alerts!");
-            }
         } else if (content === "!stop skinpeek") {
             await stopBot(() => message.reply("Stopping the bot..."));
         } else if (content === "!update") {
@@ -1127,7 +1076,6 @@ client.on("interactionCreate", async (interaction) => {
         return await interaction.reply({ content: maintenanceMessage, flags: [MessageFlags.Ephemeral] });
     }
 
-    registerInteractionLocale(interaction);
 
     const valorantUser = getUser(interaction.user.id);
 
@@ -1279,7 +1227,7 @@ client.on("interactionCreate", async (interaction) => {
 
                     await interaction.followUp({
                         embeds: [{ // move this to embed.js?
-                            title: s(interaction).info.WALLET_HEADER.f({ u: valorantUser.username }, interaction),
+                            title: s(interaction).info.WALLET_HEADER.f({ u: hideUsername({ u: valorantUser.username }, interaction).u }, interaction),
                             color: VAL_COLOR_1,
                             fields: [
                                 { name: s(interaction).info.VPOINTS, value: `${theVPEmoji} ${balance.vp}`, inline: true },

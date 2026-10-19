@@ -1,4 +1,5 @@
 import config from "./config.js";
+import { getClient } from "./client.js";
 import fs from "fs";
 import { writeFileAtomic } from "./util.js";
 
@@ -11,14 +12,10 @@ let overallStats = {
     items: {}
 };
 let statsLoaded = false;
+let itemsUnsorted = false; // addStore bumps counts in place; getOverallStats re-sorts lazily
 let statsDirty = false;
 let saveDebounceTimer = null;
 const SAVE_DEBOUNCE_MS = 5000;
-
-let statsClient = null;
-export const setStatsClient = (client) => {
-    statsClient = client;
-};
 
 /** "17-3-2026" → a UTC timestamp. Matches formatDate() below. */
 const parseDayKey = (key) => {
@@ -100,7 +97,7 @@ const saveStats = (filename = "data/stats.json") => {
 };
 
 const debouncedSaveStats = () => {
-    const shardId = statsClient?.shard?.ids?.[0];
+    const shardId = getClient()?.shard?.ids?.[0];
     if (shardId !== undefined && shardId !== 0) return; // shard 0 only
     statsDirty = true;
     if (saveDebounceTimer) return;
@@ -150,14 +147,16 @@ export const getStatsFor = (uuid) => {
     return {
         shopsIncluded: overallStats.shopsIncluded || 0,
         count: count,
-        amount: count,
-        percentage: Math.round((count / (overallStats.shopsIncluded || 1)) * 1000) / 10,
         rank: [rank, entries.length]
     };
 };
 
 export const getOverallStats = () => {
     loadStats();
+    if (itemsUnsorted) {
+        overallStats.items = Object.fromEntries(Object.entries(overallStats.items).sort(([, a], [, b]) => b - a));
+        itemsUnsorted = false;
+    }
     return overallStats;
 };
 
@@ -186,6 +185,7 @@ export const addStore = async (puuid, items) => {
     }
     todayStats.shopsIncluded++;
     overallStats.shopsIncluded++;
+    itemsUnsorted = true;
 
     debouncedSaveStats();
 };

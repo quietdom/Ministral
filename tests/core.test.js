@@ -14,7 +14,8 @@ import {
     WeaponType,
     WeaponTypeUuid,
     WEAPON_CATEGORIES,
-    writeFileAtomic
+    writeFileAtomic,
+    wait
 } from "../misc/util.js";
 
 import {
@@ -35,7 +36,9 @@ import {
     getAllUserIds,
     getUserIdsWithAlertsOrDailyShop,
     updateSingleAccountInDb,
-    closeUserDatabase
+    closeUserDatabase,
+    acquireRefreshLock,
+    releaseRefreshLock
 } from "../misc/userDatabase.js";
 
 import {
@@ -47,13 +50,14 @@ import {
 } from "../misc/settings.js";
 
 import { User, getPuuid, refreshToken, activeRefreshCount } from "../valorant/auth.js";
+import { isRateLimited, noteRateLimit } from "../misc/rateLimit.js";
 import { switchAccount } from "../valorant/accountSwitcher.js";
 import { formatNightMarket } from "../valorant/shop.js";
 import { getPrice } from "../valorant/cache.js";
 import { getStatsFor, getOverallStats, addStore } from "../misc/stats.js";
-import { basicEmbed, secondaryEmbed, actionRow, removeAlertButton, collectionModeButtons, weaponSelectDropdown, statsForSkinEmbed, getSkinLevels, getRankColor, getTierName, formatSeason, getPlayerTitle, resolvePeakRankString, renderProgressBar, renderCompetitiveMatchHistory, renderProfile, renderCollection, profileButtons, competitiveHistoryButtons, replyOrFollowUp, deferInteraction } from "../discord/embed.js";
+import { basicEmbed, secondaryEmbed, actionRow, removeAlertButton, collectionModeButtons, weaponSelectDropdown, statsForSkinEmbed, getSkinLevels, getRankColor, getTierName, formatSeason, getPlayerTitle, resolvePeakRankString, renderProgressBar, renderCompetitiveMatchHistory, renderProfile, renderCollection, skinCollectionSingleEmbed, profileButtons, competitiveHistoryButtons, replyOrFollowUp, deferInteraction } from "../discord/embed.js";
 import { renderLiveGame } from "../discord/livegameEmbed.js";
-import { cachedByPuuid, resolveServerName, parseMMRData, repollLiveGame } from "../valorant/livegame.js";
+import { cachedByPuuid, resolveServerName, parseMMRData, repollLiveGame, enrichPlayers } from "../valorant/livegame.js";
 import { formatServerName, formatPreferredServers, fitDescription, formatPlayerRow } from "../discord/livegameEmbed.js";
 
 test("util: token decoding and expiration", () => {
@@ -457,8 +461,6 @@ test("stats: getStatsFor returns valid ranking and statsForSkinEmbed formats saf
     const populatedStats = {
         shopsIncluded: 100,
         count: 25,
-        amount: 25,
-        percentage: 25,
         rank: [1, 50]
     };
     const populatedEmbed = await statsForSkinEmbed(mockSkin, populatedStats, mockInteraction);
@@ -1028,6 +1030,49 @@ test("livegame: repollLiveGame bails out before doing any work when it can't hel
     assert.equal(await repollLiveGame("definitely-not-registered", null, "pregame", "match-1"), null);
 });
 
+test("livegame: enrichPlayers preserves names for party members with incognito enabled", async () => {
+    initUserDatabase("data/test_users.db");
+    saveUserToDb({
+        id: "party-test-user",
+        currentAccount: 1,
+        settings: {},
+        accounts: [{
+            puuid: "user-puuid-self",
+            userId: "party-test-user",
+            username: "Self#001",
+            region: "eu",
+            auth: { rso: "fake", ent: "fake" },
+            alerts: []
+        }]
+    });
+
+    const rawPlayers = [
+        { puuid: "user-puuid-self", partyId: "party-alpha", incognito: true },
+        { puuid: "party-member-puuid", partyId: "party-alpha", incognito: true },
+        { puuid: "non-party-incognito", partyId: "party-beta", incognito: true },
+        { puuid: "non-party-normal", partyId: "party-beta", incognito: false },
+    ];
+
+    const enriched = await enrichPlayers("party-test-user", null, rawPlayers);
+    const self = enriched.find(p => p.puuid === "user-puuid-self");
+    const partyMember = enriched.find(p => p.puuid === "party-member-puuid");
+    const nonPartyIncognito = enriched.find(p => p.puuid === "non-party-incognito");
+    const nonPartyNormal = enriched.find(p => p.puuid === "non-party-normal");
+
+    // Self and party member should NOT have their names hidden (incognito = false)
+    assert.equal(self.incognito, false);
+    assert.equal(partyMember.incognito, false);
+
+    // Non-party player with incognito should stay incognito
+    assert.equal(nonPartyIncognito.incognito, true);
+
+    // Non-party player without incognito should not be incognito
+    assert.equal(nonPartyNormal.incognito, false);
+
+    deleteUserFromDb("party-test-user");
+});
+
+
 test("auth: a failed refresh releases its lock instead of caching the failure", async () => {
     initUserDatabase("data/test_users.db");
 
@@ -1067,6 +1112,55 @@ test("auth: a failed refresh releases its lock instead of caching the failure", 
     deleteUserFromDb("lock-test-user");
 });
 
+test("userDatabase: refresh lock blocks other owners, then frees on release or after its TTL", async () => {
+    initUserDatabase("data/test_users.db");
+
+    // Riot rotates refresh tokens on use, so two shards refreshing the same
+    // account at once means one gets a real invalid_grant back. This lock is
+    // what's supposed to stop that: only one owner can hold a given key.
+    assert.equal(acquireRefreshLock("cross-shard-key", "shard-0", 10000), true, "first claim should succeed");
+    assert.equal(acquireRefreshLock("cross-shard-key", "shard-1", 10000), false, "second shard must not double-claim a live lock");
+
+    // Releasing with the wrong owner must be a no-op — a shard can't free a lock it doesn't hold.
+    releaseRefreshLock("cross-shard-key", "shard-1");
+    assert.equal(acquireRefreshLock("cross-shard-key", "shard-1", 10000), false, "lock must still be held by shard-0 after shard-1's no-op release");
+
+    // The real owner releases; the other shard can now claim it.
+    releaseRefreshLock("cross-shard-key", "shard-0");
+    assert.equal(acquireRefreshLock("cross-shard-key", "shard-1", 10000), true, "lock should be free after its actual owner releases it");
+
+    // A holder that died without releasing (crash/hang) must not lock the account out forever.
+    // Staleness is judged by the TTL the *stealing* call passes (how old is too old, from its
+    // point of view) against the existing claim's timestamp — not the original claim's own TTL.
+    assert.equal(acquireRefreshLock("stale-key", "shard-0", 10000), true);
+    await wait(30);
+    assert.equal(acquireRefreshLock("stale-key", "shard-1", 5), true, "claim older than the stealer's TTL should be stealable");
+});
+
+test("rateLimit: notes a 429, honors retry-after, and clears once it elapses", async () => {
+    const host = "rate-limit-test.example.com";
+    assert.equal(isRateLimited(host), false, "a host we've never seen should not be limited");
+
+    // 200s must never register, however they're shaped.
+    assert.equal(noteRateLimit({ statusCode: 200, headers: {}, body: "" }, host), false);
+    assert.equal(isRateLimited(host), false);
+
+    // A 429 backs the host off for at least the retry-after window.
+    const retryAt = noteRateLimit({ statusCode: 429, headers: { "retry-after": "0" }, body: "" }, host);
+    assert.ok(retryAt > Date.now(), "noteRateLimit should return a future timestamp");
+    assert.equal(isRateLimited(host), retryAt, "isRateLimited should report the same deadline back");
+
+    // A rate limit signaled only in the body (no 429 status) is caught too —
+    // Riot returns some of these as 200s with an error field.
+    const otherHost = "rate-limit-test-2.example.com";
+    const retryAt2 = noteRateLimit({ statusCode: 200, headers: {}, body: JSON.stringify({ error: "rate_limited" }) }, otherHost);
+    assert.ok(retryAt2 > Date.now());
+
+    // Once the window passes, the host is free again without any manual reset.
+    await wait(1100);
+    assert.equal(isRateLimited(host), false, "expired rate limit should clear itself");
+});
+
 test("accountSwitcher: switchAccount rejects out-of-range indexes instead of persisting them", () => {
     initUserDatabase("data/test_users.db");
     const mk = (n) => ({
@@ -1087,6 +1181,32 @@ test("accountSwitcher: switchAccount rejects out-of-range indexes instead of per
     }
 
     deleteUserFromDb("switch-test-user");
+});
+
+test("userDatabase: saveUserToDb(user, true) never rolls back auth another shard already refreshed", () => {
+    initUserDatabase("data/test_users.db");
+    const puuid = "preserve-auth-puuid";
+    saveUserToDb({ id: "preserve-auth-user", currentAccount: 1, settings: {}, accounts: [
+        { puuid, userId: "preserve-auth-user", username: "A#1", region: "eu", auth: { rso: "old" }, alerts: [] }
+    ] });
+
+    // A metadata-only caller (settings change, alert cleanup) reads the whole
+    // record before doing its own unrelated write.
+    const staleSnapshot = getUserFromDb("preserve-auth-user");
+
+    // Meanwhile another shard refreshes the token.
+    const fresh = getUserFromDb("preserve-auth-user");
+    fresh.accounts[0].auth = { rso: "new" };
+    saveUserToDb(fresh);
+
+    // The metadata-only caller now persists its stale snapshot — this must
+    // not carry its stale auth back over the refreshed one.
+    staleSnapshot.settings = { changed: true };
+    saveUserToDb(staleSnapshot, true);
+
+    assert.deepEqual(getUserFromDb("preserve-auth-user").accounts[0].auth, { rso: "new" });
+
+    deleteUserFromDb("preserve-auth-user");
 });
 
 test("util: writeFileAtomic never leaves a half-written file in place", () => {
@@ -1134,7 +1254,7 @@ test("stats: old day buckets are pruned and rank reflects counts, not insertion 
     cfg.trackStoreStats = true;
     cfg.statsExpirationDays = 14;
 
-    const { loadStats, getStatsFor, flushStats } = await import("../misc/stats.js?prune-test");
+    const { loadStats, getStatsFor, flushStats, addStore, getOverallStats } = await import("../misc/stats.js?prune-test");
 
     loadStats();
     // The stale bucket predates statsExpirationDays, so its item is gone —
@@ -1148,6 +1268,11 @@ test("stats: old day buckets are pruned and rank reflects counts, not insertion 
     assert.deepEqual(getStatsFor("skin-fresh").rank, [1, 1]);
     assert.deepEqual(getStatsFor("nonexistent").rank, [0, 1]);
 
+    // addStore increments in place; /stats pages through getOverallStats, which must stay sorted.
+    await addStore("p3", ["skin-new"]);
+    await addStore("p4", ["skin-new"]);
+    assert.deepEqual(Object.keys(getOverallStats().items), ["skin-new", "skin-fresh"]);
+
     // Pruning schedules a debounced save; drain it rather than leaving a timer
     // that writes to the real stats file after the suite finishes.
     flushStats();
@@ -1155,4 +1280,107 @@ test("stats: old day buckets are pruned and rank reflects counts, not insertion 
     cfg.statsExpirationDays = restore.days;
     if (backup) fs.writeFileSync(statsFile, backup);
     else fs.unlinkSync(statsFile);
+});
+
+test("collection embed: displays Account # instead of <@id> when someone else views collection", async () => {
+    initUserDatabase("data/test_users.db");
+    saveUserToDb({
+        id: "target-user-123",
+        accounts: [
+            { id: "target-user-123", puuid: "puuid-target-1", username: "TargetPlayer#123", auth: { rso: "t1" }, alerts: [] },
+            { id: "target-user-123", puuid: "puuid-target-2", username: "TargetPlayer#456", auth: { rso: "t2" }, alerts: [] }
+        ],
+        currentAccount: 2,
+        settings: { hideIgn: false }
+    });
+
+    const mockInteractionOther = {
+        user: { id: "viewer-user-456" },
+        locale: "fr",
+        channel: null
+    };
+
+    const targetUser = new User({ id: "target-user-123", puuid: "puuid-target-2", username: "TargetPlayer#456" });
+    const singleResultOther = await skinCollectionSingleEmbed(mockInteractionOther, "target-user-123", targetUser, { loadout: { Guns: [] }, favorites: {} });
+    assert.ok(singleResultOther.embeds[0]);
+    assert.ok(!singleResultOther.embeds[0].title.includes("<@"));
+    assert.ok(singleResultOther.embeds[0].title.includes("Account #2"));
+
+    // With French locale in settings
+    saveUserToDb({
+        id: "fr-viewer",
+        accounts: [{ id: "fr-viewer", puuid: "puuid-fr", username: "FRViewer#1", auth: { rso: "t" }, alerts: [] }],
+        currentAccount: 1,
+        settings: { locale: "fr" }
+    });
+    const mockInteractionFr = {
+        id: "fr-viewer",
+        user: { id: "fr-viewer" },
+        channel: null
+    };
+    const frResult = await skinCollectionSingleEmbed(mockInteractionFr, "target-user-123", targetUser, { loadout: { Guns: [] }, favorites: {} });
+    assert.ok(frResult.embeds[0]);
+    assert.ok(!frResult.embeds[0].title.includes("<@"));
+    assert.ok(frResult.embeds[0].title.includes("Compte #2"));
+
+    const mockInteractionSelf = {
+        user: { id: "target-user-123" },
+        locale: "en-US",
+        channel: null
+    };
+    const singleResultSelf = await skinCollectionSingleEmbed(mockInteractionSelf, "target-user-123", targetUser, { loadout: { Guns: [] }, favorites: {} });
+    assert.ok(singleResultSelf.embeds[0]);
+    assert.ok(!singleResultSelf.embeds[0].title.includes("<@"));
+    assert.ok(singleResultSelf.embeds[0].title.includes("TargetPlayer#456"));
+});
+
+test("getLoadout: rejects a Guns-less playerloadout and survives a failing favorites endpoint", async () => {
+    const { getLoadout } = await import("../valorant/inventory.js");
+    const { setRiotVersionData } = await import("../misc/util.js");
+    const { default: https } = await import("node:https");
+    const { EventEmitter } = await import("node:events");
+    const { mock } = await import("node:test");
+    setRiotVersionData({ riotClientVersion: "release-test" });
+
+    const jwt = "h." + Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 86400 })).toString("base64url") + ".s";
+    initUserDatabase("data/test_users.db");
+    const userFor = (n) => {
+        const acc = { id: `loadout-${n}`, puuid: `puuid-loadout-${n}`, username: "L#1", region: "eu", auth: { rso: jwt, ent: "ent" }, alerts: [] };
+        saveUserToDb({ id: acc.id, accounts: [acc], currentAccount: 1, settings: {} });
+        return new User(acc);
+    };
+
+    let loadoutBody, favoritesBody;
+    const request = mock.method(https, "request", (url, opts, cb) => {
+        const req = new EventEmitter();
+        req.write = () => {};
+        req.destroy = () => {};
+        req.end = () => {
+            const resp = new EventEmitter();
+            resp.statusCode = 200;
+            resp.headers = {};
+            cb(resp);
+            resp.emit("data", Buffer.from(String(url).includes("/playerloadout") ? loadoutBody : favoritesBody));
+            resp.emit("end");
+        };
+        return req;
+    });
+
+    try {
+        // an error body has no Guns: must not become a cached, empty "loadout"
+        loadoutBody = JSON.stringify({ httpStatus: 404, errorCode: "NOT_FOUND" });
+        favoritesBody = JSON.stringify({ FavoritedContent: {} });
+        const bad = await getLoadout(userFor(1));
+        assert.equal(bad.success, false);
+
+        // favorites returning garbage only costs the star icons
+        loadoutBody = JSON.stringify({ Guns: [{ ID: "g", SkinID: "s" }] });
+        favoritesBody = "<html>502</html>";
+        const ok = await getLoadout(userFor(2));
+        assert.equal(ok.success, true);
+        assert.equal(ok.loadout.Guns.length, 1);
+        assert.deepEqual(ok.favorites, { FavoritedContent: {} });
+    } finally {
+        request.mock.restore();
+    }
 });

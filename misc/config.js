@@ -1,4 +1,5 @@
 import fs from "fs";
+import { writeFileAtomic } from "./util.js";
 
 export let config = {};
 export default config;
@@ -47,17 +48,14 @@ export const loadConfig = (filename = "config.json", saveAfterLoad = true) => {
         fetchSkinPrices: true,
         fetchSkinRarities: true,
         localiseText: true,
-        localiseSkinNames: true,
         linkItemImage: true,
         refreshSkins: "10 0 0 * * *",
         checkGameVersion: "*/15 * * * *",
         refreshPrices: "*/30 * * * *",
         updateUserAgent: "*/15 * * * *",
         delayBetweenAlerts: 5 * 1000,
-        alertConcurrency: 1,
         alertsPerPage: 10,
         careerCacheExpiration: 10 * 60 * 1000,
-        emojiCacheExpiration: 10 * 1000,
         loadoutCacheExpiration: 10 * 60 * 1000,
         livegamePollingInterval: 8000,
         deferInteractions: false,
@@ -103,23 +101,10 @@ export const loadConfig = (filename = "config.json", saveAfterLoad = true) => {
 }
 
 export const saveConfig = (filename = "config.json", configToSave) => {
-    const payload = JSON.stringify(configToSave || config, null, 2);
-    const tmpFile = `${filename}.tmp`;
-
     try {
-        // Write to temp file, then atomically replace
-        fs.writeFileSync(tmpFile, payload);
-        fs.renameSync(tmpFile, filename);
+        writeFileAtomic(filename, JSON.stringify(configToSave || config, null, 2));
     } catch (e) {
         console.error(`Failed to save config to ${filename}:`, e);
-        // Clean up temp file if it was created
-        try {
-            if (fs.existsSync(tmpFile)) {
-                fs.unlinkSync(tmpFile);
-            }
-        } catch (cleanupError) {
-            // Ignore cleanup errors
-        }
         throw e; // Re-throw to let caller know save failed
     }
 };

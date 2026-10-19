@@ -85,7 +85,7 @@ export const getSettings = (id) => {
 
     if (!json.settings) {
         json.settings = defaultSettings;
-        saveUserToDb(json);
+        saveUserToDb(json, true);
     } else {
         let changed = false;
 
@@ -103,7 +103,7 @@ export const getSettings = (id) => {
             }
         }
 
-        if (changed) saveUserToDb(json);
+        if (changed) saveUserToDb(json, true);
     }
 
     if (settingsCache.size >= MAX_SETTINGS_CACHE_SIZE) {
@@ -142,18 +142,13 @@ export const setSetting = async (interaction, setting, value, force = false) => 
         json.settings[setting] = computerifyValue(setValue);
     }
 
-    saveUserToDb(json);
+    saveUserToDb(json, true);
 
     settingsCache.delete(id);
     const { sendShardMessage } = await import("./shardMessage.js");
     await sendShardMessage({ type: "settingsInvalidate", userId: id });
 
     return json.settings[setting];
-};
-
-export const registerInteractionLocale = async (interaction) => {
-    // Dynamic locale resolution handles 'Automatic' via interaction context without DB writes.
-    // Explicit user locale preferences are set via /settings command.
 };
 
 export const settingName = (setting, interaction) => {

@@ -1,13 +1,9 @@
 import { EmbedBuilder } from "discord.js";
+import { getClient } from "../misc/client.js";
 import { s } from "../misc/languages.js";
 
-let client = null;
-
-export const setActivityFeedClient = (c) => {
-    client = c;
-};
-
 export const sendActivityFeed = async (userId, changes) => {
+    const client = getClient();
     if (!client || !changes?.length) return;
     try {
         const user = await client.users.fetch(userId).catch(() => null);

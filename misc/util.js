@@ -1,6 +1,7 @@
 import https from "https";
 import fs from "fs";
 import config from "./config.js";
+import { isRateLimited, noteRateLimit } from "./rateLimit.js";
 
 const tlsCiphers = [
     'TLS_CHACHA20_POLY1305_SHA256',
@@ -52,8 +53,30 @@ const getKeepAliveAgent = (hostname) => {
 export const fetch = (url, options = {}) => {
     if (config.logUrls) console.log("Fetching url " + url.substring(0, 200) + (url.length > 200 ? "..." : ""));
 
+    const hostname = new URL(url).hostname;
+
+    // A host that just 429'd us stays 429'd for the window it told us about —
+    // skip the wasted round trip and hand back the same shape a real 429
+    // response would have, so every caller's existing statusCode/retry-after
+    // handling keeps working unchanged.
+    const limitedUntil = isRateLimited(hostname);
+    if (limitedUntil) {
+        const retryAfterSecs = Math.max(1, Math.ceil((limitedUntil - Date.now()) / 1000));
+        if (config.logUrls) console.log(`Skipping ${hostname}, still rate-limited for ${retryAfterSecs}s`);
+        return Promise.resolve({
+            statusCode: 429,
+            headers: { "retry-after": String(retryAfterSecs) },
+            body: JSON.stringify({ error: "rate_limited" })
+        });
+    }
+
     return new Promise((resolve, reject) => {
-        const hostname = new URL(url).hostname;
+        let timeout;
+        const finish = (error, response) => {
+            clearTimeout(timeout);
+            if (error) reject(error);
+            else resolve(response);
+        };
         const req = https.request(url, {
             agent: getKeepAliveAgent(hostname),
             method: options.method || "GET",
@@ -63,9 +86,6 @@ export const fetch = (url, options = {}) => {
                 "referer": "https://github.com/giorgi-o/SkinPeek",
                 ...options.headers
             },
-            ciphers: tlsCiphers.join(':'),
-            sigalgs: tlsSigAlgs.join(':'),
-            minVersion: "TLSv1.3",
         }, resp => {
             const res = {
                 statusCode: resp.statusCode,
@@ -75,19 +95,38 @@ export const fetch = (url, options = {}) => {
             resp.on('data', (chunk) => chunks.push(chunk));
             resp.on('end', () => {
                 res.body = Buffer.concat(chunks).toString(options.encoding || "utf8");
-                resolve(res);
+                noteRateLimit(res, hostname);
+                // Cloudflare error 1020 has this exact shape and means Riot's edge is
+                // blocking this IP outright — every other failure mode (bad token,
+                // rate limit, maintenance) looks different. Worth a distinct log line
+                // since otherwise it's indistinguishable from a generic failure.
+                if (res.statusCode === 403 && res.headers["x-frame-options"] === "SAMEORIGIN") {
+                    console.error(`[ !!! ] Error 1020 from ${hostname}: your bot's IP might be blocked by Riot/Cloudflare — try hosting on a different IP to confirm.`);
+                }
+                finish(null, res);
             });
             resp.on('error', err => {
                 console.error("HTTP stream error:", err);
-                reject(err);
+                finish(err);
             });
         });
-        req.write(options.body || "");
-        req.end();
         req.on('error', err => {
             console.error("HTTP request error:", err);
-            reject(err);
+            finish(err);
         });
+        // A wall-clock deadline includes DNS, socket queues and a stalled body.
+        // Auth requests use it so a refresh cannot outlive its database lease.
+        if (options.timeoutMs) {
+            timeout = setTimeout(() => {
+                const error = new Error(`Request to ${hostname} timed out`);
+                error.code = "ETIMEDOUT";
+                req.destroy(error);
+                finish(error);
+            }, options.timeoutMs);
+            timeout.unref?.();
+        }
+        req.write(options.body || "");
+        req.end();
     });
 };
 
@@ -224,10 +263,10 @@ let cachedRiotHeaders = null;
 
 export const setRiotVersionData = (data) => {
     cachedRiotVersionData = data;
-    cachedRiotHeaders = {
+    cachedRiotHeaders = data ? {
         "X-Riot-ClientPlatform": clientPlatformBase64,
         "X-Riot-ClientVersion": data.riotClientVersion,
-    };
+    } : null;
 };
 
 export const getRiotVersionData = () => cachedRiotVersionData;
@@ -251,48 +290,20 @@ export const fetchRiotVersionData = async () => {
 export const riotClientHeaders = () => {
     if (cachedRiotHeaders) return cachedRiotHeaders;
 
-    let clientVersion = "release-10.00-shipping-0-0000000";
-    if (cachedRiotVersionData && cachedRiotVersionData.riotClientVersion) {
-        clientVersion = cachedRiotVersionData.riotClientVersion;
-    } else {
-        fetchRiotVersionData();
-        return {
-            "X-Riot-ClientPlatform": clientPlatformBase64,
-            "X-Riot-ClientVersion": clientVersion,
-        };
-    }
-
-    cachedRiotHeaders = {
+    fetchRiotVersionData(); // fills the cache for next time
+    return {
         "X-Riot-ClientPlatform": clientPlatformBase64,
-        "X-Riot-ClientVersion": clientVersion,
+        "X-Riot-ClientVersion": "release-10.00-shipping-0-0000000",
     };
-    return cachedRiotHeaders;
 };
-
-const tokenCache = new Map();
-const MAX_TOKEN_CACHE_SIZE = 256;
 
 export const decodeToken = (token) => {
     if (!token || typeof token !== "string" || !token.includes('.')) return null;
-    const cached = tokenCache.get(token);
-    if (cached) {
-        tokenCache.delete(token);
-        tokenCache.set(token, cached);
-        return cached;
-    }
 
     try {
-        const parts = token.split('.');
-        if (parts.length < 2 || !parts[1]) return null;
-        const decoded = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-
-        if (tokenCache.size >= MAX_TOKEN_CACHE_SIZE) {
-            tokenCache.delete(tokenCache.keys().next().value);
-        }
-        tokenCache.set(token, decoded);
-
-        return decoded;
-    } catch (e) {
+        const payload = token.split('.')[1];
+        return payload ? JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) : null;
+    } catch {
         return null;
     }
 };
@@ -330,17 +341,16 @@ export const isDefaultSkin = (skin) => skin.skinUuid === skin.defaultSkinUuid;
 
 // Pure utility helpers
 
-export const wait = (ms) => new Promise(r => setTimeout(r, ms));
+export { setTimeout as wait } from "node:timers/promises";
 
 export const isToday = (timestamp) => isSameDay(timestamp, Date.now());
 
-export const isSameDay = (t1, t2) => {
-    const d1 = new Date(t1);
-    const d2 = new Date(t2);
-    return d1.getUTCFullYear() === d2.getUTCFullYear() &&
-        d1.getUTCMonth() === d2.getUTCMonth() &&
-        d1.getUTCDate() === d2.getUTCDate();
+const utcDay = (t) => {
+    const d = new Date(t);
+    return isNaN(d) ? NaN : d.toISOString().slice(0, 10); // NaN never matches, like an invalid date
 };
+
+export const isSameDay = (t1, t2) => utcDay(t1) === utcDay(t2);
 
 export const ordinalSuffix = (number) => {
     return number % 100 >= 11 && number % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][(number % 10 < 4) ? number % 10 : 0];

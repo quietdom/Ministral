@@ -1,3 +1,5 @@
+import { threadId } from "node:worker_threads";
+import { randomUUID } from "node:crypto";
 import {
     fetch,
     safeJson,
@@ -8,8 +10,22 @@ import {
     fetchRiotVersionData
 } from "../misc/util.js";
 import config from "../misc/config.js";
-import { addUser, getAccountWithPuuid, getUserJson, readUserJson, saveUser } from "./accountSwitcher.js";
-import { getAllUserIds, getUserIdsWithAlertsOrDailyShop } from "../misc/userDatabase.js";
+import { addUser, getAccountWithPuuid, getUserJson } from "./accountSwitcher.js";
+import { getUserFromDb, acquireRefreshLock, releaseRefreshLock, updateAccountAuthInDb } from "../misc/userDatabase.js";
+
+export { getAllUserIds as getUserList, getUserIdsWithAlertsOrDailyShop as getAlertUserList } from "../misc/userDatabase.js";
+
+const AUTH_REQUEST_TIMEOUT_MS = 10000;
+const refreshBufferMs = () => (config.tokenRefreshBufferMinutes ?? 5) * 60000;
+const hasFreshAuth = user => Boolean(user?.auth?.ent && tokenExpiry(user.auth.rso) - Date.now() > refreshBufferMs());
+const currentAuthResult = user => hasFreshAuth(getUser(user))
+    ? { success: true } : { success: false, networkError: true };
+
+const saveAuth = (user, auth, resetFailures = false) => {
+    if (!updateAccountAuthInDb(user, user.auth, auth, resetFailures)) return false;
+    user.auth = auth;
+    return true;
+};
 
 export class User {
     constructor({ id, puuid, auth, alerts = [], username, region, authFailures, lastFetchedData, lastNoticeSeen, lastSawEasterEgg }) {
@@ -31,19 +47,15 @@ export const getUser = (id, account = null) => {
 
     if (id instanceof User) {
         const user = id;
-        const userJson = readUserJson(user.id);
+        const userJson = getUserFromDb(user.id);
         if (!userJson) return null;
 
         const userData = userJson.accounts.find(a => a.puuid === user.puuid);
         return userData && new User(userData);
     }
 
-    try {
-        const userData = getUserJson(id, account);
-        return userData && new User(userData);
-    } catch (e) {
-        return null;
-    }
+    const userData = getUserJson(id, account);
+    return userData ? new User(userData) : null;
 };
 
 export const getPuuid = (id, account = null) => {
@@ -51,34 +63,9 @@ export const getPuuid = (id, account = null) => {
     return user ? user.puuid : null;
 };
 
-export const getUserList = () => {
-    const userIds = getAllUserIds();
-    if (config.logUrls) console.log(`[getUserList] Retrieved ${userIds.length} users from database`);
-    return userIds;
-};
-
-export const getAlertUserList = () => {
-    const userIds = getUserIdsWithAlertsOrDailyShop();
-    if (config.logUrls) console.log(`[getAlertUserList] Retrieved ${userIds.length} active alert users from database`);
-    return userIds;
-};
-
 export const authUser = async (id, account = null) => {
     const user = getUser(id, account);
     if (!user || !user.auth || !user.auth.rso) return { success: false };
-
-    // If entitlements token is missing, re-fetch it or refresh tokens
-    if (!user.auth.ent) {
-        try {
-            user.auth.ent = await fetchEntitlementsToken(user);
-            if (user.auth.ent) {
-                saveUser(user);
-            }
-        } catch {}
-        if (!user.auth.ent) {
-            return await refreshToken(id, account);
-        }
-    }
 
     const rsoExpiry = tokenExpiry(user.auth.rso);
     const timeRemaining = rsoExpiry - Date.now();
@@ -87,23 +74,24 @@ export const authUser = async (id, account = null) => {
     if (!config.autoRefreshTokens) {
         if (timeRemaining > 0) {
             if (config.logUrls) console.log(`[authUser] Token valid for ${minutesRemaining} more minutes (${user.username})`);
-            return { success: true };
+            return user.auth.ent ? { success: true } : repairEntitlements(user);
         }
         return { success: false };
     }
 
-    const bufferMs = (config.tokenRefreshBufferMinutes || 5) * 60 * 1000;
+    const bufferMs = refreshBufferMs();
     if (timeRemaining > bufferMs) {
         if (config.logUrls) console.log(`[authUser] Token valid for ${minutesRemaining} more minutes (${user.username})`);
-        return { success: true };
+        return user.auth.ent ? { success: true } : repairEntitlements(user);
     }
 
     if (config.logUrls) console.log(`[authUser] Token expires in ${minutesRemaining} minutes, refreshing now (${user.username})`);
-    return await refreshToken(id, account);
+    return await refreshToken(user);
 };
 
 export const getUserInfo = async (user) => {
     const req = await fetch("https://auth.riotgames.com/userinfo", {
+        timeoutMs: AUTH_REQUEST_TIMEOUT_MS,
         headers: {
             'Authorization': "Bearer " + user.auth.rso
         }
@@ -122,26 +110,53 @@ export const getUserInfo = async (user) => {
     return null;
 };
 
-export const fetchEntitlementsToken = async (user) => {
-    const req = await fetch("https://entitlements.auth.riotgames.com/api/token/v1", {
-        method: "POST",
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': "Bearer " + user.auth.rso
+const requestEntitlements = async (user) => {
+    try {
+        const req = await fetch("https://entitlements.auth.riotgames.com/api/token/v1", {
+            method: "POST",
+            timeoutMs: AUTH_REQUEST_TIMEOUT_MS,
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': "Bearer " + user.auth.rso
+            }
+        });
+
+        if (req.statusCode !== 200) {
+            console.error(`Entitlements token status code is ${req.statusCode}`);
+            if (req.statusCode === 429) return { success: false, rateLimit: Date.now() + retryAfterMs(req) };
+            return { success: false, networkError: true, accessRejected: req.statusCode === 401 };
         }
-    });
 
-    if (req.statusCode !== 200) {
-        console.error(`Entitlements token status code is ${req.statusCode}`);
-        return null;
+        const token = safeJson(req.body)?.entitlements_token;
+        return token ? { success: true, token } : { success: false, networkError: true };
+    } catch {
+        return { success: false, networkError: true };
     }
+};
 
-    return safeJson(req.body)?.entitlements_token ?? null;
+const fetchEntitlementsToken = async user => (await requestEntitlements(user)).token ?? null;
+
+const repairEntitlements = async (user, allowRefresh = true) => {
+    const result = await requestEntitlements(user);
+    if (result.success) {
+        return saveAuth(user, { ...user.auth, ent: result.token }) ? { success: true } : currentAuthResult(user);
+    }
+    if (result.accessRejected && allowRefresh && config.autoRefreshTokens && user.auth.refresh_token) {
+        return refreshToken(user, null, { force: true });
+    }
+    return result;
+};
+
+export const retryAfterMs = req => {
+    const value = req.headers?.["retry-after"];
+    const delay = /^\d+$/.test(value) ? Number(value) * 1000 : Date.parse(value) - Date.now();
+    return Number.isFinite(delay) && delay > 0 ? delay : 30000;
 };
 
 export const getRegion = async (user) => {
     const req = await fetch("https://riot-geo.pas.si.riotgames.com/pas/v1/product/valorant", {
         method: "PUT",
+        timeoutMs: AUTH_REQUEST_TIMEOUT_MS,
         headers: {
             'Content-Type': 'application/json',
             'Authorization': "Bearer " + user.auth.rso
@@ -164,93 +179,99 @@ const activeRefreshes = new Map();
 /** Test hook: in-flight refresh count. Must be 0 whenever none is running. */
 export const activeRefreshCount = () => activeRefreshes.size;
 
-export const refreshToken = async (id, account = null) => {
+// The lease exceeds the bounded token request. Never refresh without owning it.
+// Persist rotated tokens before the separate entitlements request can stall.
+const REFRESH_LOCK_TTL_MS = 60000;
+const REFRESH_LOCK_MAX_WAIT_MS = 17000;
+const REFRESH_LOCK_POLL_MS = 400;
+
+const claimCrossShardRefresh = async (lockKey, owner, user, force) => {
+    const deadline = Date.now() + REFRESH_LOCK_MAX_WAIT_MS;
+    while (true) {
+        if (acquireRefreshLock(lockKey, owner, REFRESH_LOCK_TTL_MS)) return { gotLock: true };
+        const freshUser = getUser(user);
+        if (hasFreshAuth(freshUser) && (!force || freshUser.auth.rso !== user.auth.rso)) {
+            return { gotLock: false, alreadyFresh: true };
+        }
+        if (Date.now() >= deadline) return { gotLock: false };
+        await wait(REFRESH_LOCK_POLL_MS);
+    }
+};
+
+export const refreshToken = async (id, account = null, { force = false } = {}) => {
     let user = getUser(id, account);
     if (!user) return { success: false };
+    if (!force && hasFreshAuth(user)) return { success: true };
 
-    // If another shard/process already refreshed this token in SQLite, reuse it immediately.
-    // ent must be present too: authUser falls through to here precisely when ent is missing.
-    if (user.auth?.rso && user.auth?.ent) {
-        const rsoExpiry = tokenExpiry(user.auth.rso);
-        const bufferMs = (config.tokenRefreshBufferMinutes || 5) * 60 * 1000;
-        if (rsoExpiry - Date.now() > bufferMs) {
-            return { success: true };
-        }
-    }
-
-    if (config.logUrls) console.log(`Refreshing token for ${id}...`);
-
-    const lockKey = `${user.id}:${user.puuid || account || ''}`;
-    if (activeRefreshes.has(lockKey)) {
-        return await activeRefreshes.get(lockKey);
-    }
+    const lockKey = `${user.id}:${user.puuid}`;
+    if (activeRefreshes.has(lockKey)) return activeRefreshes.get(lockKey);
 
     const refreshPromise = (async () => {
+        const owner = `${process.pid}-${threadId}-${randomUUID()}`;
+        let gotLock = false;
         try {
-            if (user.auth && user.auth.refresh_token) {
-                if (config.logUrls) console.log(`[refreshToken] User has refresh_token, attempting refresh`);
-                try {
-                    const refreshRes = await refreshWithRefreshToken(user.auth.refresh_token);
-                    if (refreshRes.success && refreshRes.tokenData && refreshRes.tokenData.access_token) {
-                        const tokenData = refreshRes.tokenData;
-                        user.auth.rso = tokenData.access_token;
-                        if (tokenData.id_token) user.auth.idt = tokenData.id_token;
-                        if (tokenData.refresh_token) {
-                            user.auth.refresh_token = tokenData.refresh_token;
-                            user.auth.refresh_token_obtained = Date.now();
-                        }
-                        try {
-                            user.auth.ent = await fetchEntitlementsToken(user);
-                        } catch (e) {
-                            console.error(`[refreshToken] Failed to re-fetch entitlements:`, e);
-                        }
-                        user.lastFetchedData = Date.now();
-                        user.authFailures = 0;
-                        saveUser(user);
-
-                        const newExpiry = tokenExpiry(user.auth.rso);
-                        const expiresIn = Math.floor((newExpiry - Date.now()) / 60000);
-                        if (config.logUrls) console.log(`[refreshToken] Refresh token success for ${user.username} — new token expires in ${expiresIn} minutes`);
-                        return { success: true };
-                    } else if (refreshRes.invalidToken) {
-                        // Check if another process/shard updated the DB with a newer refresh token before wiping auth
-                        const freshUser = getUserJson(user.id, account);
-                        if (freshUser?.auth?.refresh_token && freshUser.auth.refresh_token !== user.auth.refresh_token) {
-                            return { success: true };
-                        }
-
-                        console.error(`[refreshToken] Refresh token is invalid/expired for ${user.username} (HTTP invalid_grant/400/401)`);
-                        deleteUserAuth(user);
-                        return { success: false, authFailure: true };
-                    } else if (refreshRes.rateLimit || refreshRes.statusCode === 429) {
-                        const retryAfter = refreshRes.retryAfter || 30000;
-                        console.warn(`[refreshToken] Rate limited while refreshing token for ${user.username} (retry after ${Math.ceil(retryAfter / 1000)}s)`);
-                        return { success: false, rateLimit: Date.now() + retryAfter };
-                    } else {
-                        console.error(`[refreshToken] Transient error refreshing token for ${user.username} (status ${refreshRes.statusCode || 'network'}), keeping credentials`);
-                        return { success: false, networkError: true };
-                    }
-                } catch (e) {
-                    console.error(`[refreshToken] Exception during refresh_token flow:`, e);
-                    return { success: false, networkError: true };
-                }
+            // Version discovery can involve network I/O; do it before the lease.
+            const userAgent = user.auth?.refresh_token ? await getUserAgent() : null;
+            const claim = await claimCrossShardRefresh(lockKey, owner, user, force);
+            gotLock = claim.gotLock;
+            if (claim.alreadyFresh) return { success: true };
+            if (!gotLock) {
+                console.warn('[refreshToken] Another refresh is still running; keeping credentials');
+                return { success: false, networkError: true };
             }
 
-            // Only delete auth if user does not have a refresh_token
-            deleteUserAuth(user);
-            return { success: false, authFailure: true };
-        } catch (e) {
-            console.error(`[refreshToken] Unexpected error for ${user.username}:`, e);
+            // Waiting may cross a rotation, login, account switch or deletion.
+            // Always reload by PUUID, never by the currently selected account.
+            const previousRso = user.auth?.rso;
+            user = getUser(user);
+            if (!user) return { success: false };
+            if (hasFreshAuth(user) && (!force || user.auth.rso !== previousRso)) return { success: true };
+            if (!user.auth?.refresh_token) {
+                deleteUserAuth(user);
+                return { success: false, authFailure: true };
+            }
+
+            const startedAt = Date.now();
+            const refreshRes = await refreshWithRefreshToken(user.auth.refresh_token, userAgent);
+            if (!refreshRes.success) {
+                // If the lease may have expired, another shard may own it now;
+                // a late failure must not delete auth. A late success is still
+                // saved: the refresh token was rotated, and saveAuth is
+                // compare-and-swap so it cannot overwrite a newer login.
+                if (Date.now() - startedAt >= REFRESH_LOCK_TTL_MS) return currentAuthResult(user);
+                if (refreshRes.invalidToken) {
+                    const freshUser = getUser(user);
+                    if (JSON.stringify(freshUser?.auth) !== JSON.stringify(user.auth)) return currentAuthResult(user);
+                    const age = user.auth.refresh_token_obtained
+                        ? `${Math.floor((Date.now() - user.auth.refresh_token_obtained) / 3600000)}h` : 'unknown';
+                    console.error(`[refreshToken] User ${user.id}: OAuth ${refreshRes.errorCode} (HTTP ${refreshRes.statusCode}); refresh token age ${age}`);
+                    if (!deleteUserAuth(user)) return currentAuthResult(user);
+                    return { success: false, authFailure: true };
+                }
+                if (refreshRes.rateLimit) return { success: false, rateLimit: Date.now() + refreshRes.retryAfter };
+                return { success: false, networkError: true };
+            }
+
+            const tokenData = refreshRes.tokenData;
+            const auth = { ...user.auth, rso: tokenData.access_token };
+            if (tokenData.id_token) auth.idt = tokenData.id_token;
+            if (tokenData.refresh_token && tokenData.refresh_token !== auth.refresh_token) {
+                auth.refresh_token = tokenData.refresh_token;
+                auth.refresh_token_obtained = Date.now();
+            }
+            delete auth.ent;
+            // This commit must happen before ANY more network calls. Losing a
+            // rotated token during an entitlement outage breaks the next refresh.
+            if (!saveAuth(user, auth, true)) return currentAuthResult(user);
+            return await repairEntitlements(user, false);
+        } catch (error) {
+            console.error('[refreshToken] Refresh failed; keeping credentials:', error.message);
             return { success: false, networkError: true };
+        } finally {
+            if (gotLock) releaseRefreshLock(lockKey, owner);
         }
     })();
 
-    // The lock is released here, after the promise is registered — not in a
-    // `finally` inside the IIFE. The no-refresh_token path above has no
-    // `await` in it, so it ran to completion (and released the lock) *before*
-    // the line that registered it, leaving a settled failure cached under this
-    // key forever: the user could log in again and every later refresh would
-    // still be served that stale {authFailure: true} until the bot restarted.
     activeRefreshes.set(lockKey, refreshPromise);
     try {
         return await refreshPromise;
@@ -259,26 +280,38 @@ export const refreshToken = async (id, account = null) => {
     }
 };
 
-export const deleteUserAuth = (user) => {
-    user.auth = {};
-    saveUser(user);
+export const deleteUserAuth = user => saveAuth(user, {});
+
+// BAD_CLAIMS says the API rejected these access/entitlement claims. It does
+// not establish that the refresh token is invalid. Only /token can do that.
+export const handleBadClaims = async user => {
+    const current = getUser(user);
+    if (!current?.auth?.rso) return { success: false, authFailure: true };
+    if (hasFreshAuth(current) && (current.auth.rso !== user.auth.rso || current.auth.ent !== user.auth.ent)) {
+        return { success: false, retry: true };
+    }
+    const result = tokenExpiry(current.auth.rso) <= Date.now()
+        ? await authUser(current) : await repairEntitlements(current);
+    return result.success ? { success: false, retry: true } : result;
 };
 
-let cachedUserAgent = null;
-
 export const getUserAgent = async () => {
-    if (cachedUserAgent) return cachedUserAgent;
+    // Riot's client build rotates on every patch and is kept fresh in
+    // util.js by a 15min cron + cross-shard broadcast (see bot.js
+    // scheduleTasks). Read that cache each call instead of memoizing our
+    // own copy here — a private cache would freeze at boot and never pick
+    // up later patches, silently sending a stale build to Riot's auth
+    // servers for the rest of the process's uptime.
     let versionData = getRiotVersionData();
     if (!versionData) {
         versionData = await fetchRiotVersionData();
     }
     const version = versionData ? (versionData.riotClientBuild || versionData.riotClientVersion) : "release-10.00-shipping-0-0000000";
-    cachedUserAgent = `RiotClient/${version} rso-auth (Windows;10;;Professional, x64)`;
-    return cachedUserAgent;
+    return `RiotClient/${version} rso-auth (Windows;10;;Professional, x64)`;
 };
 
 export const generateWebAuthUrl = () => {
-    const nonce = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+    const nonce = randomUUID();
 
     const params = new URLSearchParams({
         client_id: "riot-client",
@@ -307,6 +340,7 @@ const extractCodeFromUri = (uri) => {
 const exchangeCodeForTokens = async (code) => {
     const req = await fetch("https://auth.riotgames.com/token", {
         method: "POST",
+        timeoutMs: AUTH_REQUEST_TIMEOUT_MS,
         headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
             'user-agent': await getUserAgent()
@@ -320,20 +354,21 @@ const exchangeCodeForTokens = async (code) => {
     });
 
     if (req.statusCode !== 200) {
-        console.error(`[exchangeCodeForTokens] Token exchange failed with status ${req.statusCode}:`, req.body);
+        console.error(`[exchangeCodeForTokens] Token exchange failed with status ${req.statusCode}`);
         return null;
     }
 
     return safeJson(req.body);
 };
 
-export const refreshWithRefreshToken = async (refreshToken) => {
+export const refreshWithRefreshToken = async (refreshToken, userAgent = null) => {
     try {
         const req = await fetch("https://auth.riotgames.com/token", {
             method: "POST",
+            timeoutMs: AUTH_REQUEST_TIMEOUT_MS,
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded',
-                'user-agent': await getUserAgent()
+                'user-agent': userAgent || await getUserAgent()
             },
             body: new URLSearchParams({
                 grant_type: "refresh_token",
@@ -343,22 +378,21 @@ export const refreshWithRefreshToken = async (refreshToken) => {
         });
 
         if (req.statusCode !== 200) {
-            console.error(`[refreshWithRefreshToken] Refresh failed with status ${req.statusCode}:`, req.body);
+            console.error(`[refreshWithRefreshToken] Refresh failed with status ${req.statusCode}`);
             if (req.statusCode === 429) {
-                const retryAfterHeader = req.headers?.['retry-after'];
-                const retryAfter = retryAfterHeader ? parseInt(retryAfterHeader, 10) * 1000 : 30000;
+                const retryAfter = retryAfterMs(req);
                 return { success: false, rateLimit: true, statusCode: 429, retryAfter };
             }
 
             const errJson = safeJson(req.body);
-            const invalidToken = errJson?.error === "invalid_grant" || errJson?.error === "bad_claims";
-            return { success: false, invalidToken, statusCode: req.statusCode };
+            const invalidToken = [400, 401].includes(req.statusCode) && ["invalid_grant", "bad_claims"].includes(errJson?.error);
+            return { success: false, invalidToken, errorCode: invalidToken ? errJson.error : null, statusCode: req.statusCode };
         }
 
         const json = safeJson(req.body);
         // A 200 that isn't JSON is not a successful refresh — treat it as
         // transient so the caller keeps the user's credentials.
-        if (!json) return { success: false, networkError: true };
+        if (!json?.access_token) return { success: false, networkError: true };
         return { success: true, tokenData: json };
     } catch (e) {
         console.error(`[refreshWithRefreshToken] Exception during token refresh:`, e);
@@ -396,12 +430,11 @@ export const redeemWebAuthUrl = async (id, callbackUrl) => {
         if (existingAccount) {
             user.username = existingAccount.username;
             user.region = existingAccount.region;
-            if (existingAccount.auth) user.auth.ent = existingAccount.auth.ent;
         }
 
         const [userInfo, entitlements, region] = await Promise.all([
             getUserInfo(user),
-            user.auth.ent ? Promise.resolve(user.auth.ent) : fetchEntitlementsToken(user),
+            fetchEntitlementsToken(user),
             user.region ? Promise.resolve(user.region) : getRegion(user)
         ]);
 
