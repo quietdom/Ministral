@@ -915,6 +915,31 @@ const titleEmbed = async (uuid, price, locale, emojiString) => {
 }
 
 
+/**
+ * Equip menu for the collection view: one option per skin on the page. The
+ * equipped skin is marked, and picking it again unequips it.
+ */
+export const equipDropdown = async (interaction, id, skins, equippedSkinUuid, weaponTypeIndex, pageIndex) => {
+    const strings = s(interaction).info;
+
+    const options = skins.slice(0, 25).map(skin => {
+        const isEquipped = equippedSkinUuid && skin.skinUuid === equippedSkinUuid;
+        const option = new StringSelectMenuOptionBuilder()
+            .setLabel((l(skin.names, interaction) || "Unknown Skin").slice(0, 100))
+            .setValue(skin.skinUuid)
+            .setDescription((isEquipped ? strings.COLLECTION_EQUIPPED : strings.COLLECTION_EQUIP).slice(0, 100));
+        if (isEquipped) option.setDefault(true);
+        return option;
+    });
+
+    return new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+            .setCustomId(`clw_equip/${weaponTypeIndex}/${id}/${pageIndex}/card`)
+            .setPlaceholder(strings.COLLECTION_EQUIP_PLACEHOLDER || "Equip a skin...")
+            .addOptions(options)
+    );
+};
+
 export const weaponSelectDropdown = async (interaction, id, ownedSkins = null, selectedWeaponUuid = null) => {
     // Unique weapons (skip duplicate Melee entry)
     const uniqueWeapons = Object.entries(WeaponTypeUuid).filter(([k]) => k !== "Melee");
@@ -1407,7 +1432,7 @@ export const collectionOfWeaponEmbed = async (interaction, id, user, weaponTypeU
             const isEquipped = equippedSkinId && skin.skinUuid === equippedSkinId;
             const isFavorited = favorites?.FavoritedContent?.[skin.skinUuid];
             const star = isFavorited ? "⭐ " : "";
-            const equipBadge = isEquipped ? " `[EQUIPPED]`" : "";
+            const equipBadge = isEquipped ? " " + s(interaction).info.COLLECTION_EQUIPPED_BADGE : "";
             return `- ${star}${formatted} · ${emoji} ${skin.price || 'N/A'}${equipBadge}`;
         }));
 
@@ -1468,7 +1493,7 @@ export const collectionOfWeaponEmbed = async (interaction, id, user, weaponTypeU
             const isEquipped = equippedSkinId && skin.skinUuid === equippedSkinId;
             const isFavorited = favorites?.FavoritedContent?.[skin.skinUuid];
             const star = isFavorited ? " ⭐" : "";
-            const equipBadge = isEquipped ? " `[EQUIPPED]`" : "";
+            const equipBadge = isEquipped ? " " + s(interaction).info.COLLECTION_EQUIPPED_BADGE : "";
             return {
                 title: `${await skinNameAndEmoji(skin, interaction.channel, interaction)}${star}${equipBadge}`,
                 description: `${emoji} ${skin.price || 'N/A'}`,
@@ -1494,18 +1519,7 @@ export const collectionOfWeaponEmbed = async (interaction, id, user, weaponTypeU
 
         const canEquip = id === interaction.user.id;
         if (canEquip && pageSkins.length > 0) {
-            const equipRow = new ActionRowBuilder();
-            for (const skin of pageSkins.slice(0, 4)) {
-                const isEq = equippedSkinId && skin.skinUuid === equippedSkinId;
-                equipRow.addComponents(
-                    new ButtonBuilder()
-                        .setCustomId(`clw_equip/${weaponTypeIndex}/${skin.skinUuid}/${id}/${pageIndex}/card`)
-                        .setLabel(isEq ? "Unequip" : "Equip")
-                        .setEmoji(isEq ? "❌" : "✅")
-                        .setStyle(isEq ? ButtonStyle.Danger : ButtonStyle.Success)
-                );
-            }
-            actionRows.push(equipRow);
+            actionRows.push(await equipDropdown(interaction, id, pageSkins, equippedSkinId, weaponTypeIndex, pageIndex));
         }
 
         // Navigation & View Toggle (Row 2)

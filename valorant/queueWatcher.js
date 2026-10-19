@@ -1,17 +1,31 @@
-import { getPartyData } from "./livegame.js";
+import { getPartyData, probeLiveGameState, resolveQueueName } from "./livegame.js";
 import { getUserList, getUser } from "./auth.js";
+import { s } from "../misc/languages.js";
+import { getSetting } from "../misc/settings.js";
 import { EmbedBuilder } from "discord.js";
 
+// Watches a queue the user started from the /livegame embed, and stays quiet
+// until the match actually exists. The party is only useful for the early
+// "did they cancel?" answer - once a match is found it's the pregame/core-game
+// probe that tells us, because the party is torn apart the moment it starts.
+
 const watchers = new Map();
+
+const TICK_INTERVAL = 3000;
+const WATCH_TIMEOUT = 45 * 60 * 1000;
+const KEEP_WATCHING_AFTER_FOUND = 3 * 60 * 1000;
+const AFK_REPING_DELAY = 60000;
+const MISSED_TICK_LIMIT = 3;
 
 export const isWatching = (userId) => watchers.has(userId);
 
 export const cancelWatcher = (userId) => {
-    const w = watchers.get(userId);
-    if (!w) return;
-    clearInterval(w.timer);
-    clearTimeout(w.deadline);
-    clearTimeout(w.afkTimer);
+    const watcher = watchers.get(userId);
+    if (!watcher) return;
+    clearInterval(watcher.timer);
+    clearTimeout(watcher.deadline);
+    clearTimeout(watcher.afkTimer);
+    clearTimeout(watcher.expiry);
     watchers.delete(userId);
 };
 
@@ -20,9 +34,9 @@ export const stopAllWatchers = () => {
 };
 
 const fmtDuration = (ms) => {
-    const s = Math.floor(ms / 1000);
-    const m = Math.floor(s / 60);
-    return m > 0 ? `${m}m ${s % 60}s` : `${s}s`;
+    const secs = Math.floor(ms / 1000);
+    const mins = Math.floor(secs / 60);
+    return mins > 0 ? `${mins}m ${secs % 60}s` : `${secs}s`;
 };
 
 export const resolveDiscordUsersForPuuids = async (puuids) => {
@@ -39,12 +53,17 @@ export const resolveDiscordUsersForPuuids = async (puuids) => {
     return matches;
 };
 
-const sendPing = async (state, content) => {
+const sendPing = async (state, payload) => {
     try {
-        await state.interaction.followUp({ content });
+        await state.interaction.followUp(payload);
     } catch (e) {
         console.error(`[queuewatch] failed to ping for ${state.userId}:`, e.message);
     }
+};
+
+const queueLabel = (state) => {
+    if (!state.mode) return null;
+    return resolveQueueName(state.mode, "en-US") || state.mode;
 };
 
 export const startQueueWatcher = (userId, interaction, partyId, mode) => {
@@ -57,93 +76,107 @@ export const startQueueWatcher = (userId, interaction, partyId, mode) => {
         mode: mode || null,
         startedAt: Date.now(),
         foundNotified: false,
+        foundAt: null,
+        missedTicks: 0,
+        members: [],
         timer: null,
         deadline: null,
-        afkTimer: null
+        afkTimer: null,
+        expiry: null
     };
 
-    state.deadline = setTimeout(() => {
-        if (!watchers.has(userId)) return;
-        cancelWatcher(userId);
-    }, 45 * 60 * 1000);
-
-    const tick = async () => {
-        if (!watchers.has(userId)) return;
-        try {
-            const res = await getPartyData(userId, null, state.partyId);
-            if (!res.success) {
-                cancelWatcher(userId);
-                return;
-            }
-
-            if (res.state === "queuing") return;
-
-            const pregame = await probePregame(userId, res.matchId);
-            if (pregame) {
-                onMatchFound(state, res.members || []);
-                return;
-            }
-
-            if (res.state === "not_queuing") {
-                if (state.foundNotified) {
-                    onDodged(state);
-                }
-                cancelWatcher(userId);
-            }
-        } catch (e) {
-            console.error(`[queuewatch] error for ${userId}:`, e.message);
-        }
-    };
-
-    state.timer = setInterval(tick, 3000);
+    state.deadline = setTimeout(() => cancelWatcher(userId), WATCH_TIMEOUT);
+    state.timer = setInterval(() => tick(state).catch(e => console.error(`[queuewatch] error for ${userId}:`, e.message)), TICK_INTERVAL);
     watchers.set(userId, state);
+
+    // Grabbed once up front so the ping can mention the rest of the party
+    // without another request at the moment the match is found.
+    getPartyData(userId, null, partyId)
+        .then(res => { if (res.success && res.members) state.members = res.members; })
+        .catch(() => {});
 };
 
-const probePregame = async (userId, knownMatchId) => {
-    const { repollLiveGame, LIVEGAME_UNCHANGED } = await import("./livegame.js");
-    const probe = await repollLiveGame(userId, null, "queuing", knownMatchId).catch(() => null);
-    if (probe && probe !== LIVEGAME_UNCHANGED) return probe;
-    return null;
+const tick = async (state) => {
+    if (!watchers.has(state.userId)) return;
+
+    const probe = await probeLiveGameState(state.userId);
+    if (!probe.success) return; // transient read error, the deadline is the backstop
+
+    if (probe.state !== "not_in_game") {
+        state.missedTicks = 0;
+        await onMatchFound(state);
+        return;
+    }
+
+    // Riot reports a short gap between one match ending and the next being
+    // visible, and a single failed read looks identical, so wait for a few
+    // consistent ones before believing the player is out of a match.
+    state.missedTicks++;
+    if (state.missedTicks < MISSED_TICK_LIMIT) return;
+
+    if (state.foundNotified) {
+        // Only worth reporting while dodging is still possible - a game that
+        // simply finished shouldn't be announced as a dodge.
+        if (Date.now() - state.foundAt < KEEP_WATCHING_AFTER_FOUND) onDodged(state);
+        cancelWatcher(state.userId);
+        return;
+    }
+
+    const party = await getPartyData(state.userId, null, state.partyId);
+    if (party.success && party.state === "queuing") {
+        state.missedTicks = 0;
+        return;
+    }
+
+    cancelWatcher(state.userId); // queue cancelled or left, no match happened
 };
 
-const onMatchFound = async (state, members) => {
+const onMatchFound = async (state) => {
     if (state.foundNotified) return;
     state.foundNotified = true;
-    clearInterval(state.timer);
-    clearTimeout(state.deadline);
+    state.foundAt = Date.now();
 
-    const puuids = members.map(m => m.puuid);
-    let mentions;
+    let mentions = `<@${state.userId}>`;
     try {
-        const myUser = getUser(state.userId);
-        const discordIds = [state.userId, ...(await resolveDiscordUsersForPuuids(puuids))];
+        const discordIds = [state.userId, ...(await resolveDiscordUsersForPuuids(state.members.map(m => m.puuid)))];
         mentions = [...new Set(discordIds)].map(id => `<@${id}>`).join(" ");
     } catch {
-        mentions = `<@${state.userId}>`;
+        // worst case only the person who queued gets pinged
     }
+
+    const strings = s(state.userId).livegame;
+    const label = queueLabel(state);
 
     const embed = new EmbedBuilder()
         .setColor(0x2ecc71)
-        .setTitle(state.mode ? `Match found — ${state.mode}` : "Match found")
-        .setDescription(`Get in! Queue time: \`${fmtDuration(Date.now() - state.startedAt)}\``)
+        .setTitle(label ? strings.MATCH_FOUND_TITLE.f({ q: label }) : strings.MATCH_FOUND_TITLE_GENERIC)
+        .setDescription(strings.MATCH_FOUND_DESC.f({ t: fmtDuration(Date.now() - state.startedAt) }))
         .setTimestamp();
 
-    await sendPing(state, { content: `${mentions} 🎮`, embeds: [embed] });
+    await sendPing(state, { content: `${mentions} ${strings.MATCH_FOUND_PING}`, embeds: [embed] });
 
-    const { getSetting } = await import("../misc/settings.js");
     if (getSetting(state.userId, "queueAfkReping")) {
-        state.afkTimer = setTimeout(() => {
+        state.afkTimer = setTimeout(async () => {
             if (!watchers.has(state.userId)) return;
-            sendPing(state, `${mentions} still waiting on your accept...`);
-        }, 60000);
+
+            // Only nag while they're still sat in agent select - if they
+            // accepted, the probe has already moved on to the match itself.
+            const check = await probeLiveGameState(state.userId).catch(() => null);
+            if (check?.success && check.state !== "pregame") return;
+
+            sendPing(state, { content: `${mentions} ${strings.MATCH_FOUND_AFK}` });
+        }, AFK_REPING_DELAY);
     }
 
-    setTimeout(() => cancelWatcher(state.userId), 120000);
+    // Keep the watcher alive through the accept + agent select window so a
+    // dodge after the ping still leaves the user with an answer instead of
+    // silence. Everything is torn down after that.
+    state.expiry = setTimeout(() => cancelWatcher(state.userId), KEEP_WATCHING_AFTER_FOUND);
 };
 
 const onDodged = (state) => {
     const embed = new EmbedBuilder()
         .setColor(0xf5b942)
-        .setDescription("Match was dodged or cancelled — you're back in the lobby.");
+        .setDescription(s(state.userId).livegame.MATCH_DODGED);
     state.interaction.editReply({ embeds: [embed], components: [] }).catch(() => {});
 };

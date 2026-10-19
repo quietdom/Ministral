@@ -1,28 +1,26 @@
-import { fetch, safeJson, userRegion, riotClientHeaders } from "../misc/util.js";
+import { localRequest } from "../misc/localClient.js";
 import { authUser, getUser } from "./auth.js";
 
-const glzUrl = (user) => `https://glz-${user.region}-1.${userRegion(user)}.a.pvp.net`;
+// Friends and presences live on the local client only. The friend list itself
+// comes from /chat/v4/friends, and /chat/v4/presences holds one entry per
+// online friend - for Valorant ones, `private` is a base64 JSON blob with the
+// live session state (menu / agent select / in game).
 
-const authHeaders = (user) => ({
-    "Authorization": `Bearer ${user.auth.rso}`,
-    "X-Riot-Entitlements-JWT": user.auth.ent,
-    ...riotClientHeaders(),
-});
-
-const parsePresence = (privateJson) => {
-    let parsed = {};
+export const parseValorantPresence = (value) => {
+    if (!value) return {};
     try {
-        parsed = JSON.parse(Buffer.from(privateJson, "base64").toString("utf8"));
-    } catch (e) {
+        const parsed = JSON.parse(Buffer.from(value, "base64").toString("utf8"));
+        return {
+            state: parsed.sessionLoopState || null,
+            queueId: parsed.queueId ? String(parsed.queueId).toLowerCase() : null,
+            partySize: parsed.partySize || 1,
+            partyId: parsed.partyId || null,
+            level: parsed.accountLevel || 0,
+            tier: parsed.competitiveTier || 0
+        };
+    } catch {
         return {};
     }
-    return {
-        state: parsed.state || null,
-        level: parsed.isValid ? parseInt(parsed.level) || 0 : 0,
-        partySize: parsed.partySize || 1,
-        queueId: parsed.matchQueueId || null,
-        programId: parsed.program === null ? null : String(parsed.program),
-    };
 };
 
 export const getFriends = async (id, account = null) => {
@@ -32,54 +30,67 @@ export const getFriends = async (id, account = null) => {
     const user = getUser(id, account);
     if (!user) return { success: false };
 
-    const resp = await fetch(`${glzUrl(user)}/friends/v2/friends`, { headers: authHeaders(user) });
-    if (resp.statusCode !== 200) return { success: false, networkError: true };
+    const res = await localRequest("/chat/v4/friends");
+    if (!res.success) return res;
+    if (!Array.isArray(res.data?.friends)) return { success: false, networkError: true };
 
-    const json = safeJson(resp.body);
-    if (!json || !json.friends) return { success: true, friends: [] };
-
-    const friends = json.friends.map(f => ({
-        puuid: f.puuid,
-        name: f.game_name || f.gameName,
-        tag: f.tag_line || f.tagLine,
-        note: f.note || ""
+    const friends = res.data.friends.map(friend => ({
+        puuid: friend.puuid,
+        name: friend.game_name || friend.name || "",
+        tag: friend.game_tag || "",
+        note: friend.note || "",
+        online: Boolean(friend.activePlatform),
+        lastOnline: friend.last_online_ts || null
     }));
 
     return { success: true, friends };
 };
 
-export const getPresences = async (id, account = null) => {
-    const authResult = await authUser(id, account);
-    if (!authResult.success) return authResult;
+export const getPresences = async () => {
+    const res = await localRequest("/chat/v4/presences");
+    if (!res.success) return res;
 
-    const user = getUser(id, account);
-    if (!user) return { success: false };
-
-    const resp = await fetch(`${glzUrl(user)}/presence/v1/players/${user.puuid}`, { headers: authHeaders(user) });
-    if (resp.statusCode !== 200) return { success: true, presences: {} };
-
-    const json = safeJson(resp.body);
     const presences = {};
-    for (const p of json || []) {
-        presences[p.puuid] = parsePresence(p.private);
+    for (const presence of res.data?.presences || []) {
+        if (presence.product && presence.product !== "valorant") continue;
+        presences[String(presence.puuid).toLowerCase()] = parseValorantPresence(presence.private);
     }
+
     return { success: true, presences };
 };
+
+const stateFor = (friend, presence) => {
+    // INGAME / PREGAME come from the Valorant session blob; anything else that
+    // is reachable is just "online" (in the client menu, or on another game).
+    if (presence?.state === "INGAME" || presence?.state === "PREGAME") return presence.state;
+    if (presence?.state === "MENU" || friend.online) return "ONLINE";
+    return "OFFLINE";
+};
+
+const STATE_ORDER = { INGAME: 0, PREGAME: 1, ONLINE: 2, OFFLINE: 3 };
 
 export const getFriendsOverview = async (id, account = null) => {
     const friendsRes = await getFriends(id, account);
     if (!friendsRes.success) return friendsRes;
 
-    const presencesRes = await getPresences(id, account);
+    const presencesRes = await getPresences();
     const presences = presencesRes.success ? presencesRes.presences : {};
 
-    const friends = friendsRes.friends.map(f => ({
-        ...f,
-        presence: presences[f.puuid] || null
-    })).sort((a, b) => {
-        const aOnline = a.presence && a.presence.state !== "OFFLINE";
-        const bOnline = b.presence && b.presence.state !== "OFFLINE";
-        if (aOnline !== bOnline) return aOnline ? -1 : 1;
+    const friends = friendsRes.friends.map(friend => {
+        const presence = presences[String(friend.puuid).toLowerCase()] || null;
+        return {
+            ...friend,
+            state: stateFor(friend, presence),
+            queueId: presence?.queueId || null,
+            partySize: presence?.partySize || 1,
+            level: presence?.level || 0,
+            tier: presence?.tier || 0
+        };
+    });
+
+    friends.sort((a, b) => {
+        const order = (STATE_ORDER[a.state] ?? 3) - (STATE_ORDER[b.state] ?? 3);
+        if (order !== 0) return order;
         return (a.name || "").localeCompare(b.name || "");
     });
 

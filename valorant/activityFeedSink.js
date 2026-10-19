@@ -1,5 +1,5 @@
-import { fetchChannel } from "../discord/embed.js";
 import { EmbedBuilder } from "discord.js";
+import { s } from "../misc/languages.js";
 
 let client = null;
 
@@ -15,12 +15,12 @@ export const sendActivityFeed = async (userId, changes) => {
 
         const embed = new EmbedBuilder()
             .setColor(0xfa4454)
-            .setTitle("Friend activity")
+            .setTitle(s(userId).info.ACTIVITY_HEADER)
             .setDescription(changes.join("\n"))
             .setTimestamp();
 
         await user.send({ embeds: [embed] });
     } catch {
-        // DMs closed or user unreachable — skip silently
+        // DMs closed or user unreachable - skip silently
     }
 };

@@ -1,22 +1,24 @@
-import { getUserList, getUser } from "./auth.js";
+import { getUserList } from "./auth.js";
 import { getFriendsOverview } from "./party.js";
+import { resolveQueueName } from "./livegame.js";
+import { s } from "../misc/languages.js";
 import { getSetting } from "../misc/settings.js";
 
 const lastStates = new Map();
 let feedTimer = null;
 
-const describeState = (presence) => {
-    if (!presence || presence.state === "OFFLINE") return "offline";
-    if (presence.state === "INGAME" && presence.queueId) {
-        return `playing ${presence.queueId.charAt(0).toUpperCase() + presence.queueId.slice(1)}`;
+const describeState = (strings, friend) => {
+    if (friend.state === "INGAME") {
+        return friend.queueId
+            ? strings.FRIEND_PLAYING.f({ q: resolveQueueName(friend.queueId, "en-US") })
+            : strings.FRIEND_IN_GAME;
     }
-    if (presence.state === "PREGAME") return "in agent select";
-    return "in menu";
+    if (friend.state === "PREGAME") return strings.FRIEND_AGENT_SELECT;
+    return strings.FRIEND_ONLINE;
 };
 
 export const pollFriendActivity = async () => {
-    const users = getUserList();
-    for (const discordId of users) {
+    for (const discordId of getUserList()) {
         try {
             if (!getSetting(discordId, "friendActivityFeed")) {
                 lastStates.delete(discordId);
@@ -26,29 +28,33 @@ export const pollFriendActivity = async () => {
             const res = await getFriendsOverview(discordId);
             if (!res.success) continue;
 
+            const strings = s(discordId).info;
             const current = {};
-            for (const f of res.friends) {
-                if (!f.presence) continue;
-                const desc = describeState(f.presence);
-                if (desc !== "offline" && desc !== "in menu") {
-                    current[f.puuid] = { name: `${f.name}#${f.tag}`, desc };
-                }
+            for (const friend of res.friends) {
+                // Menus and offline friends aren't worth a notification, so the
+                // feed only ever tracks people who moved into a game.
+                if (friend.state !== "INGAME" && friend.state !== "PREGAME") continue;
+                current[friend.puuid] = {
+                    name: `${friend.name}#${friend.tag}`,
+                    description: describeState(strings, friend)
+                };
             }
 
-            const prev = lastStates.get(discordId) || {};
+            const previous = lastStates.get(discordId) || {};
             const changes = [];
+
             for (const [puuid, info] of Object.entries(current)) {
-                if (prev[puuid]?.desc !== info.desc) {
-                    changes.push(`**${info.name}** — ${info.desc}`);
+                if (previous[puuid]?.description !== info.description) {
+                    changes.push(`**${info.name}** — ${info.description}`);
                 }
             }
-            for (const [puuid, info] of Object.entries(prev)) {
-                if (!current[puuid]) {
-                    changes.push(`**${info.name}** — offline`);
-                }
+            for (const [puuid, info] of Object.entries(previous)) {
+                if (!current[puuid]) changes.push(`**${info.name}** — ${strings.FRIEND_STOPPED_PLAYING}`);
             }
 
-            if (changes.length > 0 && Object.keys(prev).length > 0) {
+            // Skipped on the first poll after startup (or after the setting was
+            // switched on) so nobody gets a wall of "came online" messages.
+            if (changes.length > 0 && Object.keys(previous).length > 0) {
                 const { sendActivityFeed } = await import("./activityFeedSink.js");
                 await sendActivityFeed(discordId, changes.slice(0, 10));
             }

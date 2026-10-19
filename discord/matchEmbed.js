@@ -1,46 +1,53 @@
 import { EmbedBuilder } from "discord.js";
+import { s } from "../misc/languages.js";
 import { getAccountInfo, fetchMatchHistory } from "../valorant/profile.js";
 
 export const renderMatchResult = async (interaction, user, tracked = false) => {
+    const strings = s(interaction);
+    const fail = (key) => tracked ? null : { embeds: [new EmbedBuilder().setColor(0xff4655).setDescription(key)] };
+
     const account = await getAccountInfo(user, interaction);
-    if (!account.success) return tracked ? null : { embeds: [new EmbedBuilder().setColor(0xff4655).setDescription(account.error || "Could not fetch your account.")] };
+    if (!account.success) return fail(account.error || strings.error.MATCH_RESULT_FAILED);
 
     const history = await fetchMatchHistory(interaction, user);
-    if (!history.success) return tracked ? null : { embeds: [new EmbedBuilder().setColor(0xff4655).setDescription(history.error || "No match data available.")] };
+    if (!history.success) return fail(history.error || strings.error.MATCH_RESULT_FAILED);
 
-    const m = history.data[0];
-    if (!m) return tracked ? null : { embeds: [new EmbedBuilder().setColor(0xff4655).setDescription("No recent matches found.")] };
+    const match = history.data[0];
+    if (!match) return fail(strings.error.NO_MATCH_DATA.f({ m: "competitive" }));
 
-    if (tracked && m.metadata.game_start && Date.now() / 1000 - m.metadata.game_start < m.metadata.game_length + 600) {
+    // A tracked game is only reported once Riot has actually finished writing
+    // it, otherwise we'd repost the previous match and call it a result.
+    if (tracked && match.metadata.game_start &&
+        Date.now() / 1000 - match.metadata.game_start < match.metadata.game_length + 600) {
         return null;
     }
 
-    const won = m.player.has_won;
-    const draw = m.player.is_draw;
+    const won = match.player.has_won;
+    const draw = match.player.is_draw;
     const color = draw ? 0xf5b942 : won ? 0x2ecc71 : 0xe74c3c;
-    const result = draw ? "DRAW" : won ? "VICTORY" : "DEFEAT";
+    const result = draw ? strings.match.DRAW : won ? strings.match.VICTORY : strings.match.DEFEAT;
 
-    const date = m.metadata.game_start ? `<t:${m.metadata.game_start}:R>` : "";
-    const score = `${m.metadata.pt_round_won ?? "?"} - ${m.metadata.et_round_won ?? "?"}`;
+    const date = match.metadata.game_start ? `<t:${match.metadata.game_start}:R>` : "";
+    const score = `${match.metadata.pt_round_won ?? "?"} - ${match.metadata.et_round_won ?? "?"}`;
 
-    let desc = `**${m.metadata.map}** · ${date}\n\`${score}\` · ${m.player.kills}/${m.player.deaths}/${m.player.assists} KDA`;
-    if (m.player.mmr !== undefined && m.player.currenttier_patched) {
-        desc += `\n**${m.player.currenttier_patched}** ${m.player.mmr ? `(${m.player.mmr} RR)` : ""}`;
+    let description = `**${match.metadata.map}** · ${date}\n\`${score}\` · ${match.player.kills}/${match.player.deaths}/${match.player.assists} KDA`;
+    if (match.player.mmr !== undefined && match.player.currenttier_patched) {
+        description += `\n**${match.player.currenttier_patched}** ${match.player.mmr ? `(${match.player.mmr} ${strings.match.RANKED_RATING})` : ""}`;
     }
 
     const embed = new EmbedBuilder()
         .setColor(color)
-        .setTitle(`Last match — ${result}`)
-        .setDescription(desc)
+        .setTitle(strings.match.LAST_MATCH_TITLE.f({ r: result }))
+        .setDescription(description)
         .addFields(
-            { name: "ACS", value: String(m.player.average_combat_score), inline: true },
-            { name: "HS%", value: `${m.player.hs_percent}%`, inline: true },
-            { name: "ADR", value: String(m.player.average_damage_round), inline: true },
-            { name: "Placement", value: m.player.position, inline: true },
-            { name: "KD", value: String(m.player.kd), inline: true }
+            { name: strings.match.AVERAGE_COMBAT_SCORE, value: String(match.player.average_combat_score), inline: true },
+            { name: strings.match.HS_PERCENT, value: `${match.player.hs_percent}%`, inline: true },
+            { name: strings.match.AVERAGE_DAMAGE_ROUND, value: String(match.player.average_damage_round), inline: true },
+            { name: strings.match.PLACEMENT, value: String(match.player.position), inline: true },
+            { name: strings.match.AVG_KD, value: String(match.player.kd), inline: true }
         );
 
-    if (m.player.agent?.iconUrl) embed.setThumbnail(m.player.agent.iconUrl);
+    if (match.player.agent?.iconUrl) embed.setThumbnail(match.player.agent.iconUrl);
 
     return { embeds: [embed] };
 };
